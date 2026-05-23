@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Prune COCO-QA full JSONL manifests.
+Prune COCO-QA full JSONL manifests and create train/val/test splits.
 
 Input:
   data/processed/cocoqa_train_full.jsonl
@@ -8,6 +8,7 @@ Input:
 
 Output:
   data/processed/cocoqa_train_pruned.jsonl
+  data/processed/cocoqa_val_pruned.jsonl
   data/processed/cocoqa_test_pruned.jsonl
   data/processed/answer_vocab.json
   data/processed/cocoqa_pruned_stats.json
@@ -19,8 +20,9 @@ Strategy:
   - Keep top-K object answers
   - Keep all color answers
   - Keep all number answers
-  - Filter test to train answer vocab
-  - Cap train samples per answer for balance
+  - Filter original test split to train answer vocab
+  - Split original test split into val/test by image_id
+  - Cap train/val/test samples per answer separately
 """
 
 import argparse
@@ -58,16 +60,15 @@ def filter_types(samples: list[dict]) -> list[dict]:
     return [s for s in samples if s["type"] in QUESTION_TYPES_TO_KEEP]
 
 
-def build_answer_vocab(
-    train_samples: list[dict],
-    object_top_k: int,
-) -> dict:
+def build_answer_vocab(train_samples: list[dict], object_top_k: int) -> dict:
     object_answers = Counter(
         s["answer"] for s in train_samples if s["type"] == "object"
     )
+
     color_answers = sorted(
         set(s["answer"] for s in train_samples if s["type"] == "color")
     )
+
     number_answers = sorted(
         set(s["answer"] for s in train_samples if s["type"] == "number")
     )
@@ -105,6 +106,7 @@ def add_answer_ids(samples: list[dict], answer_to_id: dict[str, int]) -> list[di
 
     for sample in samples:
         answer = sample["answer"]
+
         if answer not in answer_to_id:
             continue
 
@@ -115,7 +117,52 @@ def add_answer_ids(samples: list[dict], answer_to_id: dict[str, int]) -> list[di
     return out
 
 
-def cap_train_samples_per_answer(
+def split_by_image_id(
+    samples: list[dict],
+    val_fraction: float,
+    seed: int,
+) -> tuple[list[dict], list[dict]]:
+    if not 0.0 < val_fraction < 1.0:
+        raise ValueError("--val-fraction must be between 0 and 1")
+
+    rng = random.Random(seed)
+
+    image_ids = sorted(set(s["image_id"] for s in samples))
+    rng.shuffle(image_ids)
+
+    num_val_images = int(round(len(image_ids) * val_fraction))
+
+    val_image_ids = set(image_ids[:num_val_images])
+    test_image_ids = set(image_ids[num_val_images:])
+
+    val_samples = []
+    test_samples = []
+
+    for sample in samples:
+        sample = dict(sample)
+
+        if sample["image_id"] in val_image_ids:
+            sample["split"] = "val"
+            sample["sample_id"] = sample["sample_id"].replace("test_", "val_")
+            val_samples.append(sample)
+        elif sample["image_id"] in test_image_ids:
+            sample["split"] = "test"
+            test_samples.append(sample)
+        else:
+            raise RuntimeError(f"Image ID not assigned: {sample['image_id']}")
+
+    # Safety check: no image overlap.
+    val_ids = set(s["image_id"] for s in val_samples)
+    test_ids = set(s["image_id"] for s in test_samples)
+    overlap = val_ids & test_ids
+
+    if overlap:
+        raise RuntimeError(f"Val/test image overlap detected: {len(overlap)} images")
+
+    return val_samples, test_samples
+
+
+def cap_samples_per_answer(
     samples: list[dict],
     max_per_answer: int,
     seed: int,
@@ -156,10 +203,17 @@ def build_stats(samples: list[dict]) -> dict:
         "num_unique_answers": len(answer_counter),
         "type_counts": dict(type_counter),
         "top_30_answers": answer_counter.most_common(30),
-        "top_20_answers_by_type": {
-            k: v for k, v in type_answer_counts.items()
-        },
+        "top_20_answers_by_type": type_answer_counts,
     }
+
+
+def assert_no_image_overlap(val_samples: list[dict], test_samples: list[dict]) -> None:
+    val_ids = set(s["image_id"] for s in val_samples)
+    test_ids = set(s["image_id"] for s in test_samples)
+    overlap = val_ids & test_ids
+
+    if overlap:
+        raise RuntimeError(f"Val/test image overlap after capping: {len(overlap)}")
 
 
 def main() -> None:
@@ -193,6 +247,24 @@ def main() -> None:
         help="Cap train samples per answer. Use 0 to disable.",
     )
     parser.add_argument(
+        "--max-val-per-answer",
+        type=int,
+        default=200,
+        help="Cap val samples per answer. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--max-test-per-answer",
+        type=int,
+        default=100,
+        help="Cap test samples per answer. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--val-fraction",
+        type=float,
+        default=0.5,
+        help="Fraction of original COCO-QA test image IDs assigned to val.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -217,24 +289,47 @@ def main() -> None:
 
     print(f"Answer vocab size: {vocab['num_answers']}")
 
-    print("Filtering train/test to answer vocabulary...")
+    print("Filtering train/test pool to answer vocabulary...")
     train_pruned = add_answer_ids(train_type_filtered, answer_to_id)
-    test_pruned = add_answer_ids(test_type_filtered, answer_to_id)
+    test_pool_pruned = add_answer_ids(test_type_filtered, answer_to_id)
 
-    print("Capping train samples per answer...")
-    train_pruned = cap_train_samples_per_answer(
+    print("Splitting original COCO-QA test pool into val/test by image_id...")
+    val_pruned, test_pruned = split_by_image_id(
+        test_pool_pruned,
+        val_fraction=args.val_fraction,
+        seed=args.seed,
+    )
+
+    print("Capping samples per answer...")
+    train_pruned = cap_samples_per_answer(
         train_pruned,
         max_per_answer=args.max_train_per_answer,
         seed=args.seed,
     )
 
+    val_pruned = cap_samples_per_answer(
+        val_pruned,
+        max_per_answer=args.max_val_per_answer,
+        seed=args.seed + 1,
+    )
+
+    test_pruned = cap_samples_per_answer(
+        test_pruned,
+        max_per_answer=args.max_test_per_answer,
+        seed=args.seed + 2,
+    )
+
+    assert_no_image_overlap(val_pruned, test_pruned)
+
     train_out = args.out_dir / "cocoqa_train_pruned.jsonl"
+    val_out = args.out_dir / "cocoqa_val_pruned.jsonl"
     test_out = args.out_dir / "cocoqa_test_pruned.jsonl"
     vocab_out = args.out_dir / "answer_vocab.json"
     stats_out = args.out_dir / "cocoqa_pruned_stats.json"
 
     print("Writing outputs...")
     write_jsonl(train_pruned, train_out)
+    write_jsonl(val_pruned, val_out)
     write_jsonl(test_pruned, test_out)
 
     with vocab_out.open("w", encoding="utf-8") as f:
@@ -246,9 +341,13 @@ def main() -> None:
             "dropped_type": "location",
             "object_top_k": args.object_top_k,
             "max_train_per_answer": args.max_train_per_answer,
+            "max_val_per_answer": args.max_val_per_answer,
+            "max_test_per_answer": args.max_test_per_answer,
+            "val_fraction_by_image_id": args.val_fraction,
             "seed": args.seed,
         },
         "train": build_stats(train_pruned),
+        "val": build_stats(val_pruned),
         "test": build_stats(test_pruned),
     }
 
@@ -257,12 +356,16 @@ def main() -> None:
 
     print("Done.")
     print(f"Train pruned: {train_out}")
+    print(f"Val pruned:   {val_out}")
     print(f"Test pruned:  {test_out}")
     print(f"Vocab:        {vocab_out}")
     print(f"Stats:        {stats_out}")
     print()
     print("Pruned train stats:")
     print(json.dumps(stats["train"], indent=2, ensure_ascii=False))
+    print()
+    print("Pruned val stats:")
+    print(json.dumps(stats["val"], indent=2, ensure_ascii=False))
     print()
     print("Pruned test stats:")
     print(json.dumps(stats["test"], indent=2, ensure_ascii=False))
