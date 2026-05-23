@@ -1,0 +1,229 @@
+"""
+PyTorch Dataset for pruned/resolved COCO-QA.
+
+Each sample returns:
+  image:        FloatTensor [3, H, W]
+  question_ids: LongTensor [max_question_len]
+  question_len: LongTensor scalar
+  answer_id:    LongTensor scalar
+  type_id:      LongTensor scalar
+  metadata:     lightweight info for debugging/evaluation
+"""
+
+import json
+from pathlib import Path
+from typing import Callable, Optional
+
+import torch
+from PIL import Image, ImageFile
+from torch.utils.data import Dataset
+from torchvision import transforms
+
+from src.text import QuestionVocab
+
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+
+TYPE_TO_ID = {
+    "object": 0,
+    "number": 1,
+    "color": 2,
+}
+
+ID_TO_TYPE = {
+    0: "object",
+    1: "number",
+    2: "color",
+}
+
+
+def read_jsonl(path: str | Path) -> list[dict]:
+    path = Path(path)
+
+    if not path.exists():
+        raise FileNotFoundError(f"Missing JSONL file: {path}")
+
+    samples = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                samples.append(json.loads(line))
+
+    return samples
+
+
+def default_image_transform(
+    image_size: int = 128,
+    train: bool = False,
+) -> Callable:
+    """
+    Default image preprocessing for first baseline.
+
+    Keep this simple:
+      - resize/crop to fixed size
+      - convert to tensor
+      - normalize with ImageNet statistics
+
+    Later, for GAP9/export, we may replace this with deployment-specific
+    preprocessing.
+    """
+    if train:
+        return transforms.Compose(
+            [
+                transforms.Resize((image_size, image_size)),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225],
+                ),
+            ]
+        )
+
+    return transforms.Compose(
+        [
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+            ),
+        ]
+    )
+
+
+class CocoQADataset(Dataset):
+    def __init__(
+        self,
+        manifest_path: str | Path,
+        question_vocab_path: str | Path,
+        image_transform: Optional[Callable] = None,
+        image_size: int = 128,
+        train: bool = False,
+        repo_root: str | Path | None = None,
+        limit: int = 0,
+    ) -> None:
+        """
+        Args:
+          manifest_path:
+            Path to cocoqa_{split}_resolved.jsonl.
+          question_vocab_path:
+            Path to question_vocab.json.
+          image_transform:
+            Optional torchvision/PIL transform.
+          image_size:
+            Used only if image_transform is None.
+          train:
+            Whether to use train-time augmentation in default transform.
+          repo_root:
+            Base directory for resolving relative image paths.
+            If None, uses current working directory.
+          limit:
+            If >0, keep only first N samples. Useful for debugging/overfit tests.
+        """
+        self.manifest_path = Path(manifest_path)
+        self.question_vocab_path = Path(question_vocab_path)
+        self.repo_root = Path(repo_root) if repo_root is not None else Path.cwd()
+
+        self.samples = read_jsonl(self.manifest_path)
+
+        if limit > 0:
+            self.samples = self.samples[:limit]
+
+        self.question_vocab = QuestionVocab.load(self.question_vocab_path)
+
+        self.image_transform = image_transform
+        if self.image_transform is None:
+            self.image_transform = default_image_transform(
+                image_size=image_size,
+                train=train,
+            )
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def _resolve_image_path(self, image_path: str | Path) -> Path:
+        image_path = Path(image_path)
+
+        if image_path.is_absolute():
+            return image_path
+
+        return self.repo_root / image_path
+
+    def __getitem__(self, idx: int) -> dict:
+        sample = self.samples[idx]
+
+        image_path = self._resolve_image_path(sample["image_path"])
+
+        if not image_path.exists():
+            raise FileNotFoundError(f"Missing image: {image_path}")
+
+        image = Image.open(image_path).convert("RGB")
+        image = self.image_transform(image)
+
+        question_ids, question_len = self.question_vocab.encode(sample["question"])
+
+        answer_id = int(sample["answer_id"])
+
+        # Prefer existing type_id if present, but normalize to our kept mapping.
+        qtype = sample["type"]
+        if qtype not in TYPE_TO_ID:
+            raise ValueError(f"Unexpected question type: {qtype}")
+
+        type_id = TYPE_TO_ID[qtype]
+
+        return {
+            "image": image,
+            "question_ids": torch.tensor(question_ids, dtype=torch.long),
+            "question_len": torch.tensor(question_len, dtype=torch.long),
+            "answer_id": torch.tensor(answer_id, dtype=torch.long),
+            "type_id": torch.tensor(type_id, dtype=torch.long),
+            "metadata": {
+                "sample_id": sample.get("sample_id"),
+                "image_id": sample["image_id"],
+                "question": sample["question"],
+                "answer": sample["answer"],
+                "type": sample["type"],
+                "image_path": str(image_path),
+            },
+        }
+
+
+def build_cocoqa_datasets(
+    processed_dir: str | Path = "data/processed",
+    image_size: int = 128,
+    repo_root: str | Path | None = None,
+) -> tuple[CocoQADataset, CocoQADataset, CocoQADataset]:
+    """
+    Convenience function for building train/val/test datasets.
+    """
+    processed_dir = Path(processed_dir)
+    vocab_path = processed_dir / "question_vocab.json"
+
+    train_dataset = CocoQADataset(
+        manifest_path=processed_dir / "cocoqa_train_resolved.jsonl",
+        question_vocab_path=vocab_path,
+        image_size=image_size,
+        train=True,
+        repo_root=repo_root,
+    )
+
+    val_dataset = CocoQADataset(
+        manifest_path=processed_dir / "cocoqa_val_resolved.jsonl",
+        question_vocab_path=vocab_path,
+        image_size=image_size,
+        train=False,
+        repo_root=repo_root,
+    )
+
+    test_dataset = CocoQADataset(
+        manifest_path=processed_dir / "cocoqa_test_resolved.jsonl",
+        question_vocab_path=vocab_path,
+        image_size=image_size,
+        train=False,
+        repo_root=repo_root,
+    )
+
+    return train_dataset, val_dataset, test_dataset
