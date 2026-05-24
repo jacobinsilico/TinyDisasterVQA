@@ -1,53 +1,50 @@
 {
   "train": {
-    "num_samples": 31424,
-    "num_unique_images": 23288,
-    "num_unique_answers": 70,
+    "num_samples": 28616,
+    "num_unique_images": 22387,
+    "num_unique_answers": 62,
     "type_counts": {
-      "object": 23660,
-      "number": 2799,
-      "color": 4965
+      "object": 23681,
+      "color": 4935
     },
     "coco_split_counts_by_qa_pairs": {
-      "train2014": 31424
+      "train2014": 28616
     }
   },
   "val": {
-    "num_samples": 10059,
-    "num_unique_images": 6996,
-    "num_unique_answers": 70,
+    "num_samples": 9610,
+    "num_unique_images": 6952,
+    "num_unique_answers": 62,
     "type_counts": {
-      "object": 7212,
-      "number": 901,
-      "color": 1946
+      "object": 7673,
+      "color": 1937
     },
     "coco_split_counts_by_qa_pairs": {
-      "val2014": 10059
+      "val2014": 9610
     }
   },
   "test": {
-    "num_samples": 6430,
-    "num_unique_images": 4929,
-    "num_unique_answers": 70,
+    "num_samples": 5913,
+    "num_unique_images": 4837,
+    "num_unique_answers": 62,
     "type_counts": {
-      "object": 4855,
-      "color": 997,
-      "number": 578
+      "object": 4924,
+      "color": 989
     },
     "coco_split_counts_by_qa_pairs": {
-      "val2014": 6430
+      "val2014": 5913
     }
   },
   "required_images": {
-    "num_unique_images_total": 35213,
+    "num_unique_images_total": 34176,
     "coco_split_counts_by_unique_images": {
-      "train2014": 23288,
-      "val2014": 11925
+      "train2014": 22387,
+      "val2014": 11789
     },
     "used_by_splits_counts": {
-      "train": 23288,
-      "val": 6996,
-      "test": 4929
+      "train": 22387,
+      "val": 6952,
+      "test": 4837
     }
   },
   "missing": {
