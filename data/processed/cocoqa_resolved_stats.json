@@ -1,50 +1,50 @@
 {
   "train": {
-    "num_samples": 28616,
-    "num_unique_images": 22375,
+    "num_samples": 28288,
+    "num_unique_images": 22229,
     "num_unique_answers": 62,
     "type_counts": {
-      "object": 23616,
+      "object": 23288,
       "color": 5000
     },
     "coco_split_counts_by_qa_pairs": {
-      "train2014": 28616
+      "train2014": 28288
     }
   },
   "val": {
-    "num_samples": 9604,
-    "num_unique_images": 6953,
+    "num_samples": 9584,
+    "num_unique_images": 6980,
     "num_unique_answers": 62,
     "type_counts": {
-      "object": 7660,
-      "color": 1944
+      "object": 7627,
+      "color": 1957
     },
     "coco_split_counts_by_qa_pairs": {
-      "val2014": 9604
+      "val2014": 9584
     }
   },
   "test": {
-    "num_samples": 5988,
-    "num_unique_images": 4851,
+    "num_samples": 5916,
+    "num_unique_images": 4839,
     "num_unique_answers": 62,
     "type_counts": {
-      "object": 4988,
+      "object": 4916,
       "color": 1000
     },
     "coco_split_counts_by_qa_pairs": {
-      "val2014": 5988
+      "val2014": 5916
     }
   },
   "required_images": {
-    "num_unique_images_total": 34179,
+    "num_unique_images_total": 34048,
     "coco_split_counts_by_unique_images": {
-      "train2014": 22375,
-      "val2014": 11804
+      "train2014": 22229,
+      "val2014": 11819
     },
     "used_by_splits_counts": {
-      "train": 22375,
-      "val": 6953,
-      "test": 4851
+      "train": 22229,
+      "val": 6980,
+      "test": 4839
     }
   },
   "missing": {
