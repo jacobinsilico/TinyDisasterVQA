@@ -550,7 +550,7 @@ def main() -> None:
             "seed": args.seed,
             "answer_normalization": {
                 "mode": "conservative_singular_plural_only",
-                "semantic_merges": SEMANTIC_MERGES,,
+                "semantic_merges": SEMANTIC_MERGES,
             },
         },
         "train": build_stats(train_pruned),
