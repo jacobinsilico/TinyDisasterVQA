@@ -218,6 +218,26 @@ __marimo__/
 .streamlit/secrets.toml
 
 # ADDED BY ME 
-/data
-/docs
-/checkpoints
+# Images / datasets
+data/images/
+data/coco-annotations/
+data/coco-qa/
+
+# Checkpoints
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# Generated previews/logs
+data/processed/*.png
+data/processed/*log*.txt
+data/processed/download_report.json
+data/processed/missing_images.jsonl
+
+/docs 
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
