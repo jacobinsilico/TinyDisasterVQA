@@ -21,11 +21,11 @@
   },
   "train": {
     "num_samples": 28616,
-    "num_unique_images": 22387,
+    "num_unique_images": 22375,
     "num_unique_answers": 62,
     "type_counts": {
-      "object": 23681,
-      "color": 4935
+      "object": 23616,
+      "color": 5000
     },
     "top_30_answers": [
       [
@@ -160,6 +160,10 @@
           500
         ],
         [
+          "orange",
+          500
+        ],
+        [
           "gray",
           500
         ],
@@ -186,10 +190,6 @@
         [
           "white",
           500
-        ],
-        [
-          "orange",
-          435
         ]
       ],
       "object": [
@@ -277,14 +277,14 @@
     },
     "top_30_normalized_answer_pairs": [
       {
-        "original": "zebras",
-        "normalized": "zebra",
-        "count": 246
-      },
-      {
         "original": "giraffes",
         "normalized": "giraffe",
         "count": 246
+      },
+      {
+        "original": "zebras",
+        "normalized": "zebra",
+        "count": 235
       },
       {
         "original": "cows",
@@ -309,7 +309,7 @@
       {
         "original": "boats",
         "normalized": "boat",
-        "count": 210
+        "count": 201
       },
       {
         "original": "bananas",
@@ -342,19 +342,19 @@
         "count": 150
       },
       {
-        "original": "bears",
-        "normalized": "bear",
-        "count": 141
-      },
-      {
         "original": "bicycles",
         "normalized": "bicycle",
         "count": 139
       },
       {
+        "original": "bears",
+        "normalized": "bear",
+        "count": 138
+      },
+      {
         "original": "airplanes",
         "normalized": "airplane",
-        "count": 133
+        "count": 132
       },
       {
         "original": "umbrellas",
@@ -429,16 +429,16 @@
     ]
   },
   "val": {
-    "num_samples": 9610,
-    "num_unique_images": 6952,
+    "num_samples": 9604,
+    "num_unique_images": 6953,
     "num_unique_answers": 62,
     "type_counts": {
-      "object": 7673,
-      "color": 1937
+      "object": 7660,
+      "color": 1944
     },
     "top_30_answers": [
       [
-        "dog",
+        "yellow",
         200
       ],
       [
@@ -446,35 +446,7 @@
         200
       ],
       [
-        "orange",
-        200
-      ],
-      [
-        "zebra",
-        200
-      ],
-      [
         "blue",
-        200
-      ],
-      [
-        "brown",
-        200
-      ],
-      [
-        "plate",
-        200
-      ],
-      [
-        "train",
-        200
-      ],
-      [
-        "bicycle",
-        200
-      ],
-      [
-        "motorcycle",
         200
       ],
       [
@@ -482,43 +454,7 @@
         200
       ],
       [
-        "green",
-        200
-      ],
-      [
-        "cake",
-        200
-      ],
-      [
-        "car",
-        200
-      ],
-      [
-        "cat",
-        200
-      ],
-      [
-        "elephant",
-        200
-      ],
-      [
-        "cow",
-        200
-      ],
-      [
-        "white",
-        200
-      ],
-      [
-        "giraffe",
-        200
-      ],
-      [
-        "horse",
-        200
-      ],
-      [
-        "bus",
+        "dog",
         200
       ],
       [
@@ -526,7 +462,55 @@
         200
       ],
       [
+        "white",
+        200
+      ],
+      [
+        "cow",
+        200
+      ],
+      [
+        "bus",
+        200
+      ],
+      [
+        "green",
+        200
+      ],
+      [
+        "airplane",
+        200
+      ],
+      [
         "kite",
+        200
+      ],
+      [
+        "train",
+        200
+      ],
+      [
+        "boat",
+        200
+      ],
+      [
+        "gray",
+        200
+      ],
+      [
+        "brown",
+        200
+      ],
+      [
+        "motorcycle",
+        200
+      ],
+      [
+        "giraffe",
+        200
+      ],
+      [
+        "orange",
         200
       ],
       [
@@ -538,7 +522,19 @@
         200
       ],
       [
-        "boat",
+        "car",
+        200
+      ],
+      [
+        "red",
+        200
+      ],
+      [
+        "bicycle",
+        200
+      ],
+      [
+        "zebra",
         200
       ],
       [
@@ -546,30 +542,30 @@
         200
       ],
       [
-        "gray",
+        "elephant",
         200
       ],
       [
-        "airplane",
+        "horse",
         200
       ],
       [
-        "red",
+        "cat",
         200
+      ],
+      [
+        "plate",
+        197
       ]
     ],
     "top_20_answers_by_type": {
       "color": [
         [
+          "yellow",
+          200
+        ],
+        [
           "blue",
-          200
-        ],
-        [
-          "brown",
-          200
-        ],
-        [
-          "green",
           200
         ],
         [
@@ -577,7 +573,7 @@
           200
         ],
         [
-          "black",
+          "green",
           200
         ],
         [
@@ -585,49 +581,29 @@
           200
         ],
         [
-          "red",
-          200
-        ],
-        [
-          "yellow",
+          "brown",
           200
         ],
         [
           "orange",
-          172
+          200
+        ],
+        [
+          "red",
+          200
+        ],
+        [
+          "black",
+          200
         ],
         [
           "purple",
-          165
+          144
         ]
       ],
       "object": [
         [
-          "dog",
-          200
-        ],
-        [
           "pizza",
-          200
-        ],
-        [
-          "zebra",
-          200
-        ],
-        [
-          "plate",
-          200
-        ],
-        [
-          "train",
-          200
-        ],
-        [
-          "bicycle",
-          200
-        ],
-        [
-          "motorcycle",
           200
         ],
         [
@@ -635,35 +611,7 @@
           200
         ],
         [
-          "cake",
-          200
-        ],
-        [
-          "car",
-          200
-        ],
-        [
-          "cat",
-          200
-        ],
-        [
-          "elephant",
-          200
-        ],
-        [
-          "cow",
-          200
-        ],
-        [
-          "giraffe",
-          200
-        ],
-        [
-          "horse",
-          200
-        ],
-        [
-          "bus",
+          "dog",
           200
         ],
         [
@@ -671,7 +619,35 @@
           200
         ],
         [
+          "cow",
+          200
+        ],
+        [
+          "bus",
+          200
+        ],
+        [
+          "airplane",
+          200
+        ],
+        [
           "kite",
+          200
+        ],
+        [
+          "train",
+          200
+        ],
+        [
+          "boat",
+          200
+        ],
+        [
+          "motorcycle",
+          200
+        ],
+        [
+          "giraffe",
           200
         ],
         [
@@ -681,6 +657,30 @@
         [
           "bird",
           200
+        ],
+        [
+          "car",
+          200
+        ],
+        [
+          "bicycle",
+          200
+        ],
+        [
+          "zebra",
+          200
+        ],
+        [
+          "elephant",
+          200
+        ],
+        [
+          "horse",
+          200
+        ],
+        [
+          "cat",
+          200
         ]
       ]
     },
@@ -688,17 +688,22 @@
       {
         "original": "zebras",
         "normalized": "zebra",
-        "count": 108
+        "count": 116
       },
       {
         "original": "cows",
         "normalized": "cow",
-        "count": 107
+        "count": 111
       },
       {
-        "original": "giraffes",
-        "normalized": "giraffe",
-        "count": 99
+        "original": "elephants",
+        "normalized": "elephant",
+        "count": 94
+      },
+      {
+        "original": "cars",
+        "normalized": "car",
+        "count": 93
       },
       {
         "original": "horses",
@@ -706,49 +711,44 @@
         "count": 84
       },
       {
-        "original": "elephants",
-        "normalized": "elephant",
-        "count": 80
-      },
-      {
-        "original": "cars",
-        "normalized": "car",
-        "count": 80
-      },
-      {
-        "original": "bears",
-        "normalized": "bear",
-        "count": 76
-      },
-      {
-        "original": "kites",
-        "normalized": "kite",
-        "count": 76
+        "original": "giraffes",
+        "normalized": "giraffe",
+        "count": 79
       },
       {
         "original": "boats",
         "normalized": "boat",
-        "count": 74
+        "count": 77
       },
       {
         "original": "birds",
         "normalized": "bird",
-        "count": 72
-      },
-      {
-        "original": "dogs",
-        "normalized": "dog",
-        "count": 67
-      },
-      {
-        "original": "motorcycles",
-        "normalized": "motorcycle",
-        "count": 66
+        "count": 75
       },
       {
         "original": "donuts",
         "normalized": "donut",
+        "count": 74
+      },
+      {
+        "original": "dogs",
+        "normalized": "dog",
+        "count": 71
+      },
+      {
+        "original": "motorcycles",
+        "normalized": "motorcycle",
         "count": 64
+      },
+      {
+        "original": "bicycles",
+        "normalized": "bicycle",
+        "count": 64
+      },
+      {
+        "original": "kites",
+        "normalized": "kite",
+        "count": 63
       },
       {
         "original": "airplanes",
@@ -756,122 +756,98 @@
         "count": 59
       },
       {
-        "original": "buses",
-        "normalized": "bus",
-        "count": 56
-      },
-      {
-        "original": "bicycles",
-        "normalized": "bicycle",
-        "count": 53
+        "original": "bears",
+        "normalized": "bear",
+        "count": 57
       },
       {
         "original": "bananas",
         "normalized": "banana",
-        "count": 50
-      },
-      {
-        "original": "trains",
-        "normalized": "train",
-        "count": 45
-      },
-      {
-        "original": "umbrellas",
-        "normalized": "umbrella",
-        "count": 43
+        "count": 49
       },
       {
         "original": "trucks",
         "normalized": "truck",
-        "count": 42
-      },
-      {
-        "original": "surfboards",
-        "normalized": "surfboard",
-        "count": 33
-      },
-      {
-        "original": "pizzas",
-        "normalized": "pizza",
-        "count": 32
-      },
-      {
-        "original": "suitcases",
-        "normalized": "suitcase",
-        "count": 31
+        "count": 47
       },
       {
         "original": "cats",
         "normalized": "cat",
+        "count": 47
+      },
+      {
+        "original": "buses",
+        "normalized": "bus",
+        "count": 42
+      },
+      {
+        "original": "trains",
+        "normalized": "train",
+        "count": 36
+      },
+      {
+        "original": "umbrellas",
+        "normalized": "umbrella",
+        "count": 35
+      },
+      {
+        "original": "surfboards",
+        "normalized": "surfboard",
         "count": 28
       },
       {
         "original": "jets",
         "normalized": "jet",
-        "count": 26
+        "count": 25
+      },
+      {
+        "original": "pizzas",
+        "normalized": "pizza",
+        "count": 23
+      },
+      {
+        "original": "suitcases",
+        "normalized": "suitcase",
+        "count": 22
+      },
+      {
+        "original": "vases",
+        "normalized": "vase",
+        "count": 21
+      },
+      {
+        "original": "beds",
+        "normalized": "bed",
+        "count": 21
       },
       {
         "original": "benches",
         "normalized": "bench",
-        "count": 25
+        "count": 21
       },
       {
-        "original": "skateboards",
-        "normalized": "skateboard",
+        "original": "toilets",
+        "normalized": "toilet",
         "count": 20
       },
       {
-        "original": "laptops",
-        "normalized": "laptop",
-        "count": 18
-      },
-      {
-        "original": "ties",
-        "normalized": "tie",
-        "count": 18
-      },
-      {
-        "original": "plates",
-        "normalized": "plate",
-        "count": 18
+        "original": "sandwiches",
+        "normalized": "sandwich",
+        "count": 20
       }
     ]
   },
   "test": {
-    "num_samples": 5913,
-    "num_unique_images": 4837,
+    "num_samples": 5988,
+    "num_unique_images": 4851,
     "num_unique_answers": 62,
     "type_counts": {
-      "object": 4924,
-      "color": 989
+      "object": 4988,
+      "color": 1000
     },
     "top_30_answers": [
       [
-        "car",
-        100
-      ],
-      [
-        "bear",
-        100
-      ],
-      [
-        "dog",
-        100
-      ],
-      [
-        "train",
-        100
-      ],
-      [
-        "sheep",
-        100
-      ],
-      [
-        "room",
-        100
-      ],
-      [
-        "donut",
+        "blue",
         100
       ],
       [
@@ -879,23 +855,15 @@
         100
       ],
       [
-        "cat",
+        "clock",
         100
       ],
       [
-        "elephant",
+        "black",
         100
       ],
       [
-        "horse",
-        100
-      ],
-      [
-        "boat",
-        100
-      ],
-      [
-        "pizza",
+        "orange",
         100
       ],
       [
@@ -903,47 +871,7 @@
         100
       ],
       [
-        "ball",
-        100
-      ],
-      [
-        "clock",
-        100
-      ],
-      [
-        "motorcycle",
-        100
-      ],
-      [
-        "umbrella",
-        100
-      ],
-      [
-        "tower",
-        100
-      ],
-      [
-        "toilet",
-        100
-      ],
-      [
-        "hydrant",
-        100
-      ],
-      [
-        "bird",
-        100
-      ],
-      [
-        "white",
-        100
-      ],
-      [
-        "purple",
-        100
-      ],
-      [
-        "plate",
+        "banana",
         100
       ],
       [
@@ -951,7 +879,23 @@
         100
       ],
       [
-        "phone",
+        "room",
+        100
+      ],
+      [
+        "gray",
+        100
+      ],
+      [
+        "airplane",
+        100
+      ],
+      [
+        "car",
+        100
+      ],
+      [
+        "elephant",
         100
       ],
       [
@@ -963,22 +907,78 @@
         100
       ],
       [
+        "kite",
+        100
+      ],
+      [
+        "toilet",
+        100
+      ],
+      [
+        "yellow",
+        100
+      ],
+      [
+        "white",
+        100
+      ],
+      [
+        "sheep",
+        100
+      ],
+      [
+        "green",
+        100
+      ],
+      [
+        "zebra",
+        100
+      ],
+      [
+        "ball",
+        100
+      ],
+      [
+        "purple",
+        100
+      ],
+      [
+        "bicycle",
+        100
+      ],
+      [
+        "horse",
+        100
+      ],
+      [
         "brown",
+        100
+      ],
+      [
+        "bird",
+        100
+      ],
+      [
+        "umbrella",
+        100
+      ],
+      [
+        "dog",
         100
       ]
     ],
     "top_20_answers_by_type": {
       "color": [
         [
-          "white",
+          "blue",
           100
         ],
         [
-          "purple",
+          "black",
           100
         ],
         [
-          "brown",
+          "orange",
           100
         ],
         [
@@ -990,11 +990,7 @@
           100
         ],
         [
-          "red",
-          100
-        ],
-        [
-          "black",
+          "white",
           100
         ],
         [
@@ -1002,73 +998,21 @@
           100
         ],
         [
-          "blue",
+          "purple",
           100
         ],
         [
-          "orange",
-          89
+          "brown",
+          100
+        ],
+        [
+          "red",
+          100
         ]
       ],
       "object": [
         [
-          "car",
-          100
-        ],
-        [
-          "bear",
-          100
-        ],
-        [
-          "dog",
-          100
-        ],
-        [
-          "train",
-          100
-        ],
-        [
-          "sheep",
-          100
-        ],
-        [
-          "room",
-          100
-        ],
-        [
-          "donut",
-          100
-        ],
-        [
           "computer",
-          100
-        ],
-        [
-          "cat",
-          100
-        ],
-        [
-          "elephant",
-          100
-        ],
-        [
-          "horse",
-          100
-        ],
-        [
-          "boat",
-          100
-        ],
-        [
-          "pizza",
-          100
-        ],
-        [
-          "sandwich",
-          100
-        ],
-        [
-          "ball",
           100
         ],
         [
@@ -1076,143 +1020,194 @@
           100
         ],
         [
-          "motorcycle",
+          "sandwich",
           100
         ],
         [
-          "umbrella",
+          "banana",
           100
         ],
         [
-          "tower",
+          "cow",
+          100
+        ],
+        [
+          "room",
+          100
+        ],
+        [
+          "airplane",
+          100
+        ],
+        [
+          "car",
+          100
+        ],
+        [
+          "elephant",
+          100
+        ],
+        [
+          "vase",
+          100
+        ],
+        [
+          "bus",
+          100
+        ],
+        [
+          "kite",
           100
         ],
         [
           "toilet",
+          100
+        ],
+        [
+          "sheep",
+          100
+        ],
+        [
+          "zebra",
+          100
+        ],
+        [
+          "ball",
+          100
+        ],
+        [
+          "bicycle",
+          100
+        ],
+        [
+          "horse",
+          100
+        ],
+        [
+          "bird",
+          100
+        ],
+        [
+          "umbrella",
           100
         ]
       ]
     },
     "top_30_normalized_answer_pairs": [
       {
-        "original": "zebras",
-        "normalized": "zebra",
+        "original": "horses",
+        "normalized": "horse",
         "count": 54
       },
       {
         "original": "cows",
         "normalized": "cow",
-        "count": 54
+        "count": 50
       },
       {
-        "original": "cars",
-        "normalized": "car",
-        "count": 49
-      },
-      {
-        "original": "horses",
-        "normalized": "horse",
-        "count": 46
-      },
-      {
-        "original": "bananas",
-        "normalized": "banana",
-        "count": 46
-      },
-      {
-        "original": "elephants",
-        "normalized": "elephant",
-        "count": 43
+        "original": "zebras",
+        "normalized": "zebra",
+        "count": 50
       },
       {
         "original": "boats",
         "normalized": "boat",
+        "count": 48
+      },
+      {
+        "original": "bananas",
+        "normalized": "banana",
+        "count": 47
+      },
+      {
+        "original": "bears",
+        "normalized": "bear",
+        "count": 44
+      },
+      {
+        "original": "kites",
+        "normalized": "kite",
+        "count": 43
+      },
+      {
+        "original": "elephants",
+        "normalized": "elephant",
+        "count": 42
+      },
+      {
+        "original": "cars",
+        "normalized": "car",
         "count": 42
       },
       {
         "original": "giraffes",
         "normalized": "giraffe",
-        "count": 41
-      },
-      {
-        "original": "birds",
-        "normalized": "bird",
         "count": 40
-      },
-      {
-        "original": "donuts",
-        "normalized": "donut",
-        "count": 40
-      },
-      {
-        "original": "bicycles",
-        "normalized": "bicycle",
-        "count": 39
-      },
-      {
-        "original": "kites",
-        "normalized": "kite",
-        "count": 34
-      },
-      {
-        "original": "dogs",
-        "normalized": "dog",
-        "count": 32
-      },
-      {
-        "original": "cats",
-        "normalized": "cat",
-        "count": 31
-      },
-      {
-        "original": "bears",
-        "normalized": "bear",
-        "count": 31
       },
       {
         "original": "suitcases",
         "normalized": "suitcase",
-        "count": 30
+        "count": 39
+      },
+      {
+        "original": "donuts",
+        "normalized": "donut",
+        "count": 39
       },
       {
         "original": "umbrellas",
         "normalized": "umbrella",
-        "count": 28
+        "count": 35
+      },
+      {
+        "original": "birds",
+        "normalized": "bird",
+        "count": 33
       },
       {
         "original": "surfboards",
         "normalized": "surfboard",
-        "count": 25
+        "count": 29
       },
       {
-        "original": "buses",
-        "normalized": "bus",
+        "original": "motorcycles",
+        "normalized": "motorcycle",
+        "count": 28
+      },
+      {
+        "original": "bicycles",
+        "normalized": "bicycle",
+        "count": 27
+      },
+      {
+        "original": "cats",
+        "normalized": "cat",
+        "count": 26
+      },
+      {
+        "original": "trains",
+        "normalized": "train",
+        "count": 24
+      },
+      {
+        "original": "dogs",
+        "normalized": "dog",
         "count": 23
       },
       {
         "original": "jets",
         "normalized": "jet",
+        "count": 22
+      },
+      {
+        "original": "buses",
+        "normalized": "bus",
         "count": 21
       },
       {
-        "original": "airplanes",
-        "normalized": "airplane",
-        "count": 20
-      },
-      {
-        "original": "vases",
-        "normalized": "vase",
-        "count": 18
-      },
-      {
-        "original": "trucks",
-        "normalized": "truck",
-        "count": 18
-      },
-      {
-        "original": "motorcycles",
-        "normalized": "motorcycle",
-        "count": 18
+        "original": "laptops",
+        "normalized": "laptop",
+        "count": 19
       },
       {
         "original": "benches",
@@ -1220,28 +1215,33 @@
         "count": 18
       },
       {
-        "original": "sandwiches",
-        "normalized": "sandwich",
-        "count": 16
-      },
-      {
         "original": "pizzas",
         "normalized": "pizza",
+        "count": 17
+      },
+      {
+        "original": "airplanes",
+        "normalized": "airplane",
         "count": 15
       },
       {
-        "original": "laptops",
-        "normalized": "laptop",
-        "count": 15
+        "original": "skateboards",
+        "normalized": "skateboard",
+        "count": 14
       },
       {
-        "original": "trains",
-        "normalized": "train",
-        "count": 13
+        "original": "ties",
+        "normalized": "tie",
+        "count": 14
       },
       {
-        "original": "plates",
-        "normalized": "plate",
+        "original": "vases",
+        "normalized": "vase",
+        "count": 14
+      },
+      {
+        "original": "trucks",
+        "normalized": "truck",
         "count": 13
       }
     ]

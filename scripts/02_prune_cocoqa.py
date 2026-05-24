@@ -229,11 +229,38 @@ def build_answer_vocab(train_samples: list[dict], object_top_k: int) -> dict:
     }
 
 
-def add_answer_ids(samples: list[dict], answer_to_id: dict[str, int]) -> list[dict]:
+def add_answer_ids(samples: list[dict], vocab: dict) -> list[dict]:
+    """
+    Add global answer IDs, but filter using type-specific vocabularies.
+
+    Important:
+      A sample should only survive if its answer is valid for its own type.
+      Example:
+        "orange" may be a color answer.
+        But object samples with answer "orange" should only survive if
+        "orange" is also explicitly included in object_answers.
+
+    This prevents color answers from accidentally keeping object samples,
+    and vice versa.
+    """
+    answer_to_id = vocab["answer_to_id"]
+
+    valid_answers_by_type = {
+        "object": set(vocab["object_answers"]),
+        "color": set(vocab["color_answers"]),
+    }
+
     out = []
 
     for sample in samples:
+        qtype = sample["type"]
         answer = sample["answer"]
+
+        if qtype not in valid_answers_by_type:
+            continue
+
+        if answer not in valid_answers_by_type[qtype]:
+            continue
 
         if answer not in answer_to_id:
             continue
@@ -438,8 +465,8 @@ def main() -> None:
     print(f"Color answers:     {len(vocab['color_answers'])}")
 
     print("Filtering train/test pool to answer vocabulary...")
-    train_pruned = add_answer_ids(train_type_filtered, answer_to_id)
-    test_pool_pruned = add_answer_ids(test_type_filtered, answer_to_id)
+    train_pruned = add_answer_ids(train_type_filtered, vocab)
+    test_pool_pruned = add_answer_ids(test_type_filtered, vocab)
 
     print("Splitting original COCO-QA test pool into val/test by image_id...")
     val_pruned, test_pruned = split_by_image_id(
