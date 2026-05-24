@@ -324,6 +324,10 @@ class TypeAwareClassifier(nn.Module):
 
         local_logits = head(fused[rows])  # [N_type, num_type_answers]
 
+        # AMP/autocast can make local_logits float16 while global_logits is float32.
+        # Index assignment requires matching dtypes.
+        local_logits = local_logits.to(dtype=global_logits.dtype)
+
         row_index = rows.unsqueeze(1)
         col_index = answer_ids.to(global_logits.device).unsqueeze(0)
 
