@@ -34,8 +34,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torchvision.models import (
+    ConvNeXt_Tiny_Weights,
     MobileNet_V2_Weights,
     MobileNet_V3_Large_Weights,
+    convnext_tiny,
     mobilenet_v2,
     mobilenet_v3_large,
 )
@@ -347,6 +349,62 @@ class MobileNetV3LargeEncoder(nn.Module):
         x = self.proj(x)
         return x
 
+class ConvNeXtTinyEncoder(nn.Module):
+    """
+    ConvNeXt-Tiny image encoder.
+
+    This is intended as a strong offline teacher backbone.
+    It is NOT intended for GAP9 deployment.
+
+    Input:
+      image: [B, 3, H, W]
+
+    Output:
+      image_features: [B, image_feature_dim]
+    """
+
+    def __init__(
+        self,
+        image_feature_dim: int = 256,
+        pretrained: bool = True,
+        freeze_backbone: bool = False,
+    ) -> None:
+        super().__init__()
+
+        weights = ConvNeXt_Tiny_Weights.DEFAULT if pretrained else None
+        backbone = convnext_tiny(weights=weights)
+
+        self.features = backbone.features
+
+        # torchvision ConvNeXt-Tiny classifier usually ends with Linear(768, 1000).
+        convnext_feature_dim = backbone.classifier[-1].in_features
+
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+
+        self.proj = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(convnext_feature_dim, image_feature_dim),
+            nn.ReLU(inplace=True),
+        )
+
+        if freeze_backbone:
+            self.freeze_backbone()
+
+    def freeze_backbone(self) -> None:
+        for param in self.features.parameters():
+            param.requires_grad = False
+
+    def unfreeze_backbone(self) -> None:
+        for param in self.features.parameters():
+            param.requires_grad = True
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        x = self.features(images)
+        x = self.pool(x)
+        x = self.proj(x)
+        return x
+
+
 def build_image_encoder(
     model_name: str,
     image_feature_dim: int,
@@ -406,9 +464,16 @@ def build_image_encoder(
             freeze_backbone=freeze_image_encoder,
         )
 
+    if model_name in {"convnext_tiny", "convnext-tiny", "convnext"}:
+        return ConvNeXtTinyEncoder(
+            image_feature_dim=image_feature_dim,
+            pretrained=pretrained,
+            freeze_backbone=freeze_image_encoder,
+        )
+
     raise ValueError(
-        f"Unknown model_name='{model_name}'. "
-        f"Supported: cnn, gapcnn_s, mobilenet_v2, mobilenet_v3_large"
+    f"Unknown model_name='{model_name}'. "
+    f"Supported: cnn, gapcnn_s, mobilenet_v2, mobilenet_v3_large, convnext_tiny"
     )
 
 

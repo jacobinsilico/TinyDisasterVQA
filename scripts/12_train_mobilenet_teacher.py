@@ -333,7 +333,7 @@ def main() -> None:
         "--model-name",
         type=str,
         default="mobilenet_v3_large",
-        choices=["mobilenet_v2", "mobilenet_v3_large"],
+        choices=["mobilenet_v2", "mobilenet_v3_large", "convnext_tiny"],
     )
     parser.add_argument(
         "--head-type",
