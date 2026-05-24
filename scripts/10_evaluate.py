@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
 """
-Evaluate a trained baseline VQA checkpoint on train/val/test.
+Evaluate a trained VQA checkpoint on train/val/test.
+
+Works for:
+  - cnn
+  - mobilenet_v2
 
 Example Colab usage:
-
-python scripts/10_evaluate.py \
-  --checkpoint /content/drive/MyDrive/edge-vlm-gap9-runs/baseline_cnn_128/best.pt \
-  --split val \
-  --batch-size 128 \
-  --num-workers 2 \
-  --out-dir /content/drive/MyDrive/edge-vlm-gap9-runs/baseline_cnn_128/eval
 
 python scripts/10_evaluate.py \
   --checkpoint /content/drive/MyDrive/edge-vlm-gap9-runs/baseline_cnn_128/best.pt \
   --split test \
   --batch-size 128 \
   --num-workers 2 \
-  --out-dir /content/drive/MyDrive/edge-vlm-gap9-runs/baseline_cnn_128/eval
+  --out-dir /content/drive/MyDrive/edge-vlm-gap9-runs/baseline_cnn_128/eval \
+  --save-predictions
+
+python scripts/10_evaluate.py \
+  --checkpoint /content/drive/MyDrive/edge-vlm-gap9-runs/mobilenet_v2_frozen_128/best.pt \
+  --split test \
+  --batch-size 128 \
+  --num-workers 2 \
+  --out-dir /content/drive/MyDrive/edge-vlm-gap9-runs/mobilenet_v2_frozen_128/eval \
+  --save-predictions
 """
 
 import argparse
@@ -58,6 +64,33 @@ def move_batch_to_device(batch: dict, device: torch.device) -> tuple:
     return images, question_ids, question_len, answer_id, type_id
 
 
+def infer_model_settings_from_checkpoint(
+    checkpoint: dict,
+    cli_model_name: str | None,
+    cli_freeze_image_encoder: bool,
+    cli_use_pretrained_init: bool,
+) -> dict:
+    """
+    Reconstruct model settings.
+
+    For evaluation, pretrained initialization is not needed because the full
+    checkpoint state_dict is loaded. Keeping it False avoids unnecessary downloads.
+    """
+    config = checkpoint.get("config", {})
+
+    model_name = cli_model_name or config.get("model_name", "cnn")
+    freeze_image_encoder = cli_freeze_image_encoder or bool(
+        config.get("freeze_image_encoder", False)
+    )
+
+    return {
+        "model_name": model_name,
+        "pretrained": bool(cli_use_pretrained_init),
+        "freeze_image_encoder": freeze_image_encoder,
+        "checkpoint_config": config,
+    }
+
+
 @torch.no_grad()
 def evaluate(
     model: nn.Module,
@@ -65,7 +98,6 @@ def evaluate(
     criterion: nn.Module,
     device: torch.device,
     id_to_answer: dict[int, str],
-    save_predictions: bool,
     use_amp: bool,
 ) -> tuple[dict, list[dict]]:
     model.eval()
@@ -107,21 +139,22 @@ def evaluate(
             pred_answer = id_to_answer[pred_id]
             qtype = ID_TO_TYPE[t_id]
 
+            correct = int(target_answer == pred_answer)
+
             confusion_by_answer[target_answer][pred_answer] += 1
 
-            if save_predictions:
-                pred_rows.append(
-                    {
-                        "sample_id": batch["metadata"]["sample_id"][i],
-                        "image_id": batch["metadata"]["image_id"][i],
-                        "question": batch["metadata"]["question"][i],
-                        "type": qtype,
-                        "target_answer": target_answer,
-                        "pred_answer": pred_answer,
-                        "correct": int(target_answer == pred_answer),
-                        "image_path": batch["metadata"]["image_path"][i],
-                    }
-                )
+            pred_rows.append(
+                {
+                    "sample_id": batch["metadata"]["sample_id"][i],
+                    "image_id": batch["metadata"]["image_id"][i],
+                    "question": batch["metadata"]["question"][i],
+                    "type": qtype,
+                    "target_answer": target_answer,
+                    "pred_answer": pred_answer,
+                    "correct": correct,
+                    "image_path": batch["metadata"]["image_path"][i],
+                }
+            )
 
     metrics = acc_tracker.compute()
     metrics["loss"] = loss_meter.avg
@@ -138,12 +171,12 @@ def evaluate(
 
     per_answer_accuracy = {}
     for ans in sorted(answer_total.keys()):
+        total = answer_total[ans]
+        correct = answer_correct[ans]
         per_answer_accuracy[ans] = {
-            "correct": answer_correct[ans],
-            "total": answer_total[ans],
-            "accuracy": answer_correct[ans] / answer_total[ans]
-            if answer_total[ans] > 0
-            else 0.0,
+            "correct": correct,
+            "total": total,
+            "accuracy": correct / total if total > 0 else 0.0,
         }
 
     metrics["per_answer_accuracy"] = per_answer_accuracy
@@ -161,13 +194,11 @@ def evaluate(
                     }
                 )
 
-    top_confusions = sorted(
+    metrics["top_confusions"] = sorted(
         top_confusions,
         key=lambda x: x["count"],
         reverse=True,
     )[:50]
-
-    metrics["top_confusions"] = top_confusions
 
     return metrics, pred_rows
 
@@ -207,6 +238,40 @@ def print_prediction_examples(rows: list[dict], max_items: int = 12) -> None:
         print(f"Target: {row['target_answer']}")
         print(f"Pred:   {row['pred_answer']}")
         print(f"Result: {result}")
+
+
+def print_per_answer_summary(metrics: dict, max_items: int = 15) -> None:
+    per_answer = metrics.get("per_answer_accuracy", {})
+
+    if not per_answer:
+        return
+
+    sorted_low = sorted(
+        per_answer.items(),
+        key=lambda kv: (kv[1]["accuracy"], -kv[1]["total"]),
+    )
+
+    sorted_high = sorted(
+        per_answer.items(),
+        key=lambda kv: (kv[1]["accuracy"], kv[1]["total"]),
+        reverse=True,
+    )
+
+    print()
+    print("Lowest per-answer accuracies:")
+    for ans, item in sorted_low[:max_items]:
+        print(
+            f"{ans:>15s}: acc={item['accuracy']:.3f} "
+            f"({item['correct']}/{item['total']})"
+        )
+
+    print()
+    print("Highest per-answer accuracies:")
+    for ans, item in sorted_high[:max_items]:
+        print(
+            f"{ans:>15s}: acc={item['accuracy']:.3f} "
+            f"({item['correct']}/{item['total']})"
+        )
 
 
 def main() -> None:
@@ -261,6 +326,25 @@ def main() -> None:
         "--save-predictions",
         action="store_true",
     )
+    parser.add_argument(
+        "--model-name",
+        choices=["cnn", "mobilenet_v2"],
+        default=None,
+        help="Override model architecture. By default inferred from checkpoint config.",
+    )
+    parser.add_argument(
+        "--freeze-image-encoder",
+        action="store_true",
+        help="Override/freeze image encoder when rebuilding model.",
+    )
+    parser.add_argument(
+        "--use-pretrained-init",
+        action="store_true",
+        help=(
+            "Initialize backbone with pretrained weights before loading checkpoint. "
+            "Usually unnecessary for evaluation."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -271,6 +355,20 @@ def main() -> None:
     print(f"AMP: {use_amp}")
     print(f"Checkpoint: {args.checkpoint}")
     print(f"Split: {args.split}")
+
+    print("Loading checkpoint metadata...")
+    checkpoint = torch.load(args.checkpoint, map_location=device)
+
+    model_settings = infer_model_settings_from_checkpoint(
+        checkpoint=checkpoint,
+        cli_model_name=args.model_name,
+        cli_freeze_image_encoder=args.freeze_image_encoder,
+        cli_use_pretrained_init=args.use_pretrained_init,
+    )
+
+    print(f"Model name: {model_settings['model_name']}")
+    print(f"Pretrained init: {model_settings['pretrained']}")
+    print(f"Freeze image encoder: {model_settings['freeze_image_encoder']}")
 
     manifest_path = args.processed_dir / f"cocoqa_{args.split}_resolved.jsonl"
     question_vocab_path = args.processed_dir / "question_vocab.json"
@@ -301,14 +399,17 @@ def main() -> None:
         vocab_size=question_vocab.size,
         num_answers=len(id_to_answer),
         pad_id=question_vocab.pad_id,
+        model_name=model_settings["model_name"],
+        pretrained=model_settings["pretrained"],
+        freeze_image_encoder=model_settings["freeze_image_encoder"],
     ).to(device)
 
     print(f"Dataset samples: {len(dataset)}")
     print(f"Question vocab size: {question_vocab.size}")
     print(f"Answer classes: {len(id_to_answer)}")
-    print(f"Model parameters: {count_parameters(model):,}")
+    print(f"Trainable parameters: {count_parameters(model, trainable_only=True):,}")
+    print(f"Total parameters:     {count_parameters(model, trainable_only=False):,}")
 
-    checkpoint = torch.load(args.checkpoint, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
     print(f"Loaded checkpoint epoch: {checkpoint.get('epoch')}")
@@ -322,7 +423,6 @@ def main() -> None:
         criterion=criterion,
         device=device,
         id_to_answer=id_to_answer,
-        save_predictions=True,
         use_amp=use_amp,
     )
 
@@ -336,6 +436,7 @@ def main() -> None:
     for item in metrics["top_confusions"][:20]:
         print(f"{item['target']} -> {item['pred']}: {item['count']}")
 
+    print_per_answer_summary(metrics, max_items=15)
     print_prediction_examples(pred_rows, max_items=12)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
