@@ -241,6 +241,20 @@ class CocoQADataset(Dataset):
         type_id = TYPE_TO_ID[qtype]
         head_answer_id = self.head_answer_to_id[qtype][sample["answer"]]
 
+        metadata = {
+            "sample_id": str(sample.get("sample_id", "")),
+            "image_id": int(sample["image_id"]),
+            "question": str(sample["question"]),
+            "answer": str(sample["answer"]),
+            "type": str(sample["type"]),
+            "image_path": str(image_path),
+        }
+
+        if "answer_original" in sample:
+            metadata["answer_original"] = str(sample["answer_original"])
+        else:
+            metadata["answer_original"] = ""
+
         return {
             "image": image,
             "question_ids": torch.tensor(question_ids, dtype=torch.long),
@@ -249,15 +263,7 @@ class CocoQADataset(Dataset):
             "type_id": torch.tensor(type_id, dtype=torch.long),
             "type_onehot": self._type_onehot(type_id),
             "head_answer_id": torch.tensor(head_answer_id, dtype=torch.long),
-            "metadata": {
-                "sample_id": sample.get("sample_id"),
-                "image_id": sample["image_id"],
-                "question": sample["question"],
-                "answer": sample["answer"],
-                "answer_original": sample.get("answer_original"),
-                "type": sample["type"],
-                "image_path": str(image_path),
-            },
+            "metadata": metadata,
         }
 
 
