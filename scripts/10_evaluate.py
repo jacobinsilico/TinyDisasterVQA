@@ -6,22 +6,18 @@ Works for:
   - cnn
   - mobilenet_v2
 
-Example Colab usage:
+Works with:
+  - shared head
+  - separate type-aware heads
+
+Example:
 
 python scripts/10_evaluate.py \
-  --checkpoint /content/drive/MyDrive/edge-vlm-gap9-runs/baseline_cnn_128/best.pt \
+  --checkpoint /content/drive/MyDrive/edge-vlm-gap9-runs/mobilenet_v2_multihead_128/best.pt \
   --split test \
   --batch-size 128 \
   --num-workers 2 \
-  --out-dir /content/drive/MyDrive/edge-vlm-gap9-runs/baseline_cnn_128/eval \
-  --save-predictions
-
-python scripts/10_evaluate.py \
-  --checkpoint /content/drive/MyDrive/edge-vlm-gap9-runs/mobilenet_v2_frozen_128/best.pt \
-  --split test \
-  --batch-size 128 \
-  --num-workers 2 \
-  --out-dir /content/drive/MyDrive/edge-vlm-gap9-runs/mobilenet_v2_frozen_128/eval \
+  --out-dir /content/drive/MyDrive/edge-vlm-gap9-runs/mobilenet_v2_multihead_128/eval \
   --save-predictions
 """
 
@@ -47,11 +43,65 @@ from src.model import build_baseline_vqa_model, count_parameters
 from src.text import QuestionVocab
 
 
+def read_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        raise FileNotFoundError(f"Missing JSONL file: {path}")
+
+    samples = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                samples.append(json.loads(line))
+
+    return samples
+
+
 def load_answer_vocab(path: Path) -> dict[int, str]:
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
     return {int(k): v for k, v in data["id_to_answer"].items()}
+
+
+def build_answer_ids_by_type(processed_dir: Path) -> dict[str, list[int]]:
+    """
+    Fallback for old checkpoints or manual evaluation.
+
+    Builds valid global answer IDs for object/color/number from the resolved
+    manifests. This is only used to reconstruct separate-head models.
+    """
+    paths = [
+        processed_dir / "cocoqa_train_resolved.jsonl",
+        processed_dir / "cocoqa_val_resolved.jsonl",
+        processed_dir / "cocoqa_test_resolved.jsonl",
+    ]
+
+    answer_ids_by_type = {
+        "object": set(),
+        "color": set(),
+        "number": set(),
+    }
+
+    for path in paths:
+        if not path.exists():
+            continue
+
+        for sample in read_jsonl(path):
+            qtype = sample["type"]
+            if qtype in answer_ids_by_type:
+                answer_ids_by_type[qtype].add(int(sample["answer_id"]))
+
+    out = {
+        qtype: sorted(ids)
+        for qtype, ids in answer_ids_by_type.items()
+    }
+
+    for qtype, ids in out.items():
+        if not ids:
+            raise ValueError(f"No answer IDs found for question type: {qtype}")
+
+    return out
 
 
 def move_batch_to_device(batch: dict, device: torch.device) -> tuple:
@@ -66,27 +116,46 @@ def move_batch_to_device(batch: dict, device: torch.device) -> tuple:
 
 def infer_model_settings_from_checkpoint(
     checkpoint: dict,
+    processed_dir: Path,
     cli_model_name: str | None,
+    cli_head_type: str | None,
     cli_freeze_image_encoder: bool,
     cli_use_pretrained_init: bool,
 ) -> dict:
     """
     Reconstruct model settings.
 
-    For evaluation, pretrained initialization is not needed because the full
-    checkpoint state_dict is loaded. Keeping it False avoids unnecessary downloads.
+    For evaluation, pretrained initialization is usually not needed because
+    checkpoint weights are loaded. Keeping pretrained=False avoids unnecessary
+    downloads.
     """
     config = checkpoint.get("config", {})
 
     model_name = cli_model_name or config.get("model_name", "cnn")
+    head_type = cli_head_type or config.get("head_type", "shared")
+
     freeze_image_encoder = cli_freeze_image_encoder or bool(
         config.get("freeze_image_encoder", False)
     )
 
+    answer_ids_by_type = config.get("answer_ids_by_type")
+
+    if answer_ids_by_type is None:
+        answer_ids_by_type = build_answer_ids_by_type(processed_dir)
+
+    # Make sure keys and values are normalized.
+    answer_ids_by_type = {
+        "object": [int(x) for x in answer_ids_by_type["object"]],
+        "color": [int(x) for x in answer_ids_by_type["color"]],
+        "number": [int(x) for x in answer_ids_by_type["number"]],
+    }
+
     return {
         "model_name": model_name,
+        "head_type": head_type,
         "pretrained": bool(cli_use_pretrained_init),
         "freeze_image_encoder": freeze_image_encoder,
+        "answer_ids_by_type": answer_ids_by_type,
         "checkpoint_config": config,
     }
 
@@ -160,7 +229,6 @@ def evaluate(
     metrics["loss"] = loss_meter.avg
     metrics["time_sec"] = time.time() - start_time
 
-    # Per-answer accuracy.
     answer_total = Counter()
     answer_correct = Counter()
 
@@ -181,7 +249,6 @@ def evaluate(
 
     metrics["per_answer_accuracy"] = per_answer_accuracy
 
-    # Top confusions.
     top_confusions = []
     for target_answer, pred_counter in confusion_by_answer.items():
         for pred_answer, count in pred_counter.most_common():
@@ -333,6 +400,12 @@ def main() -> None:
         help="Override model architecture. By default inferred from checkpoint config.",
     )
     parser.add_argument(
+        "--head-type",
+        choices=["shared", "separate"],
+        default=None,
+        help="Override classifier head type. By default inferred from checkpoint config.",
+    )
+    parser.add_argument(
         "--freeze-image-encoder",
         action="store_true",
         help="Override/freeze image encoder when rebuilding model.",
@@ -361,14 +434,23 @@ def main() -> None:
 
     model_settings = infer_model_settings_from_checkpoint(
         checkpoint=checkpoint,
+        processed_dir=args.processed_dir,
         cli_model_name=args.model_name,
+        cli_head_type=args.head_type,
         cli_freeze_image_encoder=args.freeze_image_encoder,
         cli_use_pretrained_init=args.use_pretrained_init,
     )
 
     print(f"Model name: {model_settings['model_name']}")
+    print(f"Head type: {model_settings['head_type']}")
     print(f"Pretrained init: {model_settings['pretrained']}")
     print(f"Freeze image encoder: {model_settings['freeze_image_encoder']}")
+
+    print()
+    print("Answer IDs by type:")
+    print(f"  object: {len(model_settings['answer_ids_by_type']['object'])}")
+    print(f"  color:  {len(model_settings['answer_ids_by_type']['color'])}")
+    print(f"  number: {len(model_settings['answer_ids_by_type']['number'])}")
 
     manifest_path = args.processed_dir / f"cocoqa_{args.split}_resolved.jsonl"
     question_vocab_path = args.processed_dir / "question_vocab.json"
@@ -402,6 +484,10 @@ def main() -> None:
         model_name=model_settings["model_name"],
         pretrained=model_settings["pretrained"],
         freeze_image_encoder=model_settings["freeze_image_encoder"],
+        head_type=model_settings["head_type"],
+        object_answer_ids=model_settings["answer_ids_by_type"]["object"],
+        color_answer_ids=model_settings["answer_ids_by_type"]["color"],
+        number_answer_ids=model_settings["answer_ids_by_type"]["number"],
     ).to(device)
 
     print(f"Dataset samples: {len(dataset)}")
