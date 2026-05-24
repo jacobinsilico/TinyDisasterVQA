@@ -1,30 +1,134 @@
 """
 VQA models for pruned COCO-QA.
 
-Task:
-  image + question + question type -> 70-class answer prediction
+Current final task:
+  image + question type -> object/color answer prediction
 
-Available image encoders:
+Supported image encoders:
   - cnn: small CNN trained from scratch
   - mobilenet_v2: ImageNet-pretrained MobileNetV2 backbone
+  - gapcnn_s: GAP9/NE16-friendly small CNN encoder
 
-Available classifier heads:
-  - shared: one classifier over all answer classes
-  - separate: type-aware classifier heads for object/color/number answers
+Supported model families:
+  - BaselineVQAModel:
+      image + tokenized question + type embedding -> global logits
+      useful for CNN/MobileNet baselines and teachers
 
-Architecture:
-  image encoder
-  + word embedding / masked mean pooling question encoder
-  + question type embedding
-  + classifier head(s)
+  - GAPCNNVQAModel:
+      image + type one-hot / type id -> object/color heads
+      hardware-aware student model for GAP9 experiments
+
+Important:
+  GAPCNN-S intentionally avoids residuals, attention, dynamic control flow,
+  depthwise convolutions, LayerNorm, GELU/SiLU, and fancy indexing in the
+  architecture itself. During training/evaluation we may still assemble
+  global logits for convenience, but deployment should export the clean
+  object/color heads directly.
 """
 
 from typing import Sequence
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from torchvision.models import MobileNet_V2_Weights, mobilenet_v2
+
+
+# Object/color-only type mapping.
+TYPE_TO_ID = {
+    "object": 0,
+    "color": 1,
+}
+
+ID_TO_TYPE = {
+    0: "object",
+    1: "color",
+}
+
+
+# ---------------------------------------------------------------------
+# Generic building blocks
+# ---------------------------------------------------------------------
+
+
+class ConvBNReLU(nn.Module):
+    """
+    GAP9-friendly Conv-BN-ReLU block.
+
+    During deployment, BatchNorm should be folded into Conv.
+    """
+
+    def __init__(
+        self,
+        in_ch: int,
+        out_ch: int,
+        kernel_size: int = 3,
+        stride: int = 1,
+        padding: int | None = None,
+    ) -> None:
+        super().__init__()
+
+        if padding is None:
+            padding = kernel_size // 2
+
+        self.block = nn.Sequential(
+            nn.Conv2d(
+                in_ch,
+                out_ch,
+                kernel_size=kernel_size,
+                stride=stride,
+                padding=padding,
+                bias=False,
+            ),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.block(x)
+
+
+def make_mlp(
+    in_dim: int,
+    hidden_dim: int,
+    out_dim: int,
+    dropout: float,
+) -> nn.Sequential:
+    return nn.Sequential(
+        nn.Linear(in_dim, hidden_dim),
+        nn.ReLU(inplace=True),
+        nn.Dropout(dropout),
+        nn.Linear(hidden_dim, hidden_dim),
+        nn.ReLU(inplace=True),
+        nn.Dropout(dropout),
+        nn.Linear(hidden_dim, out_dim),
+    )
+
+
+def count_parameters(model: nn.Module, trainable_only: bool = True) -> int:
+    """
+    Count model parameters.
+    """
+    if trainable_only:
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    return sum(p.numel() for p in model.parameters())
+
+
+def estimate_int8_weight_size_bytes(model: nn.Module, trainable_only: bool = False) -> int:
+    """
+    Rough INT8 weight memory estimate.
+
+    1 parameter ~= 1 byte after INT8 weight quantization.
+    This does not include activation memory, code, buffers, or metadata.
+    """
+    return count_parameters(model, trainable_only=trainable_only)
+
+
+# ---------------------------------------------------------------------
+# Image encoders
+# ---------------------------------------------------------------------
 
 
 class SmallCNNEncoder(nn.Module):
@@ -43,29 +147,19 @@ class SmallCNNEncoder(nn.Module):
 
         self.conv = nn.Sequential(
             # 128x128 -> 64x64
-            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
+            ConvBNReLU(3, 32, kernel_size=3, stride=2),
 
             # 64x64 -> 32x32
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
+            ConvBNReLU(32, 64, kernel_size=3, stride=2),
 
             # 32x32 -> 16x16
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
+            ConvBNReLU(64, 128, kernel_size=3, stride=2),
 
             # 16x16 -> 8x8
-            nn.Conv2d(128, 192, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(192),
-            nn.ReLU(inplace=True),
+            ConvBNReLU(128, 192, kernel_size=3, stride=2),
 
             # 8x8 -> 4x4
-            nn.Conv2d(192, 256, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
+            ConvBNReLU(192, 256, kernel_size=3, stride=2),
 
             nn.AdaptiveAvgPool2d((1, 1)),
         )
@@ -78,6 +172,64 @@ class SmallCNNEncoder(nn.Module):
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         x = self.conv(images)
+        x = self.proj(x)
+        return x
+
+
+class GAPCNNSmallEncoder(nn.Module):
+    """
+    GAPCNN-S image encoder.
+
+    Design goals:
+      - deployment-friendly
+      - mostly 3x3 convolutions
+      - no residuals in v1
+      - no depthwise conv in v1
+      - no attention / normalization tricks
+      - target roughly <1 MB INT8 for full model
+
+    Input:
+      image: [B, 3, 128, 128]
+
+    Output:
+      image_features: [B, image_feature_dim]
+    """
+
+    def __init__(self, image_feature_dim: int = 160) -> None:
+        super().__init__()
+
+        self.features = nn.Sequential(
+            # 128x128 -> 64x64
+            ConvBNReLU(3, 24, kernel_size=3, stride=2),
+            ConvBNReLU(24, 32, kernel_size=3, stride=1),
+
+            # 64x64 -> 32x32
+            ConvBNReLU(32, 48, kernel_size=3, stride=2),
+            ConvBNReLU(48, 48, kernel_size=3, stride=1),
+
+            # 32x32 -> 16x16
+            ConvBNReLU(48, 72, kernel_size=3, stride=2),
+            ConvBNReLU(72, 72, kernel_size=3, stride=1),
+
+            # 16x16 -> 8x8
+            ConvBNReLU(72, 96, kernel_size=3, stride=2),
+            ConvBNReLU(96, 96, kernel_size=3, stride=1),
+
+            # 8x8 -> 4x4
+            ConvBNReLU(96, 128, kernel_size=3, stride=2),
+            ConvBNReLU(128, 128, kernel_size=3, stride=1),
+
+            nn.AdaptiveAvgPool2d((1, 1)),
+        )
+
+        self.proj = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(128, image_feature_dim),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        x = self.features(images)
         x = self.proj(x)
         return x
 
@@ -135,6 +287,63 @@ class MobileNetV2Encoder(nn.Module):
         return x
 
 
+def build_image_encoder(
+    model_name: str,
+    image_feature_dim: int,
+    pretrained: bool = True,
+    freeze_image_encoder: bool = False,
+) -> nn.Module:
+    """
+    Build image encoder by name.
+
+    Supported:
+      - cnn
+      - small_cnn
+      - gapcnn_s
+      - mobilenet_v2
+    """
+    model_name = model_name.lower()
+
+    if model_name in {"cnn", "small_cnn", "baseline_cnn"}:
+        encoder = SmallCNNEncoder(
+            image_feature_dim=image_feature_dim,
+        )
+
+        if freeze_image_encoder:
+            for param in encoder.parameters():
+                param.requires_grad = False
+
+        return encoder
+
+    if model_name in {"gapcnn_s", "gapcnn-small", "gapcnn_small"}:
+        encoder = GAPCNNSmallEncoder(
+            image_feature_dim=image_feature_dim,
+        )
+
+        if freeze_image_encoder:
+            for param in encoder.parameters():
+                param.requires_grad = False
+
+        return encoder
+
+    if model_name in {"mobilenet_v2", "mobilenetv2"}:
+        return MobileNetV2Encoder(
+            image_feature_dim=image_feature_dim,
+            pretrained=pretrained,
+            freeze_backbone=freeze_image_encoder,
+        )
+
+    raise ValueError(
+        f"Unknown model_name='{model_name}'. "
+        f"Supported: cnn, gapcnn_s, mobilenet_v2"
+    )
+
+
+# ---------------------------------------------------------------------
+# Baseline / teacher VQA model
+# ---------------------------------------------------------------------
+
+
 class MeanPoolQuestionEncoder(nn.Module):
     """
     Question encoder using word embeddings + masked mean pooling.
@@ -189,38 +398,24 @@ class MeanPoolQuestionEncoder(nn.Module):
         return features
 
 
-def make_mlp(
-    in_dim: int,
-    hidden_dim: int,
-    out_dim: int,
-    dropout: float,
-) -> nn.Sequential:
-    return nn.Sequential(
-        nn.Linear(in_dim, hidden_dim),
-        nn.ReLU(inplace=True),
-        nn.Dropout(dropout),
-        nn.Linear(hidden_dim, hidden_dim),
-        nn.ReLU(inplace=True),
-        nn.Dropout(dropout),
-        nn.Linear(hidden_dim, out_dim),
-    )
-
-
 class TypeAwareClassifier(nn.Module):
     """
-    Classifier over global answer IDs.
+    Object/color classifier over global answer IDs.
 
     head_type="shared":
       One classifier produces [B, num_answers].
 
     head_type="separate":
-      Three classifiers produce logits only for valid answer IDs:
+      Two classifiers produce logits only for valid answer IDs:
         type_id 0 = object
-        type_id 1 = number
-        type_id 2 = color
+        type_id 1 = color
 
       Output is still [B, num_answers].
       Invalid answer logits are set to a large negative value.
+
+    Note:
+      The global scatter is convenient for training/evaluation.
+      For deployment, prefer exporting separate object/color heads directly.
     """
 
     def __init__(
@@ -232,7 +427,7 @@ class TypeAwareClassifier(nn.Module):
         head_type: str = "shared",
         object_answer_ids: Sequence[int] | None = None,
         color_answer_ids: Sequence[int] | None = None,
-        number_answer_ids: Sequence[int] | None = None,
+        number_answer_ids: Sequence[int] | None = None,  # kept for old caller compatibility
     ) -> None:
         super().__init__()
 
@@ -254,22 +449,19 @@ class TypeAwareClassifier(nn.Module):
                 f"Supported: shared, separate"
             )
 
-        if object_answer_ids is None or color_answer_ids is None or number_answer_ids is None:
+        if object_answer_ids is None or color_answer_ids is None:
             raise ValueError(
-                "Separate heads require object_answer_ids, color_answer_ids, "
-                "and number_answer_ids."
+                "Separate object/color heads require object_answer_ids "
+                "and color_answer_ids."
             )
 
         object_answer_ids = sorted(set(int(x) for x in object_answer_ids))
         color_answer_ids = sorted(set(int(x) for x in color_answer_ids))
-        number_answer_ids = sorted(set(int(x) for x in number_answer_ids))
 
         if len(object_answer_ids) == 0:
             raise ValueError("object_answer_ids cannot be empty.")
         if len(color_answer_ids) == 0:
             raise ValueError("color_answer_ids cannot be empty.")
-        if len(number_answer_ids) == 0:
-            raise ValueError("number_answer_ids cannot be empty.")
 
         self.register_buffer(
             "object_answer_ids",
@@ -279,11 +471,6 @@ class TypeAwareClassifier(nn.Module):
         self.register_buffer(
             "color_answer_ids",
             torch.tensor(color_answer_ids, dtype=torch.long),
-            persistent=True,
-        )
-        self.register_buffer(
-            "number_answer_ids",
-            torch.tensor(number_answer_ids, dtype=torch.long),
             persistent=True,
         )
 
@@ -298,13 +485,6 @@ class TypeAwareClassifier(nn.Module):
             in_dim=fusion_dim,
             hidden_dim=hidden_dim,
             out_dim=len(color_answer_ids),
-            dropout=dropout,
-        )
-
-        self.number_head = make_mlp(
-            in_dim=fusion_dim,
-            hidden_dim=hidden_dim,
-            out_dim=len(number_answer_ids),
             dropout=dropout,
         )
 
@@ -323,9 +503,6 @@ class TypeAwareClassifier(nn.Module):
             return
 
         local_logits = head(fused[rows])  # [N_type, num_type_answers]
-
-        # AMP/autocast can make local_logits float16 while global_logits is float32.
-        # Index assignment requires matching dtypes.
         local_logits = local_logits.to(dtype=global_logits.dtype)
 
         row_index = rows.unsqueeze(1)
@@ -337,16 +514,14 @@ class TypeAwareClassifier(nn.Module):
         if self.head_type == "shared":
             return self.shared_head(fused)
 
-        # Large negative value, safe for AMP/fp16.
         logits = fused.new_full(
             (fused.shape[0], self.num_answers),
             fill_value=-1e4,
         )
 
-        # Dataset type IDs:
+        # Object/color dataset type IDs:
         # 0 = object
-        # 1 = number
-        # 2 = color
+        # 1 = color
         self._scatter_head_logits(
             global_logits=logits,
             fused=fused,
@@ -361,59 +536,11 @@ class TypeAwareClassifier(nn.Module):
             fused=fused,
             type_id=type_id,
             target_type_id=1,
-            head=self.number_head,
-            answer_ids=self.number_answer_ids,
-        )
-
-        self._scatter_head_logits(
-            global_logits=logits,
-            fused=fused,
-            type_id=type_id,
-            target_type_id=2,
             head=self.color_head,
             answer_ids=self.color_answer_ids,
         )
 
         return logits
-
-
-def build_image_encoder(
-    model_name: str,
-    image_feature_dim: int,
-    pretrained: bool = True,
-    freeze_image_encoder: bool = False,
-) -> nn.Module:
-    """
-    Build image encoder by name.
-
-    Supported:
-      - cnn
-      - mobilenet_v2
-    """
-    model_name = model_name.lower()
-
-    if model_name in {"cnn", "small_cnn", "baseline_cnn"}:
-        encoder = SmallCNNEncoder(
-            image_feature_dim=image_feature_dim,
-        )
-
-        if freeze_image_encoder:
-            for param in encoder.parameters():
-                param.requires_grad = False
-
-        return encoder
-
-    if model_name in {"mobilenet_v2", "mobilenetv2"}:
-        return MobileNetV2Encoder(
-            image_feature_dim=image_feature_dim,
-            pretrained=pretrained,
-            freeze_backbone=freeze_image_encoder,
-        )
-
-    raise ValueError(
-        f"Unknown model_name='{model_name}'. "
-        f"Supported: cnn, mobilenet_v2"
-    )
 
 
 class BaselineVQAModel(nn.Module):
@@ -434,7 +561,7 @@ class BaselineVQAModel(nn.Module):
         self,
         vocab_size: int,
         num_answers: int,
-        num_types: int = 3,
+        num_types: int = 2,
         pad_id: int = 0,
         model_name: str = "cnn",
         pretrained: bool = True,
@@ -442,7 +569,7 @@ class BaselineVQAModel(nn.Module):
         head_type: str = "shared",
         object_answer_ids: Sequence[int] | None = None,
         color_answer_ids: Sequence[int] | None = None,
-        number_answer_ids: Sequence[int] | None = None,
+        number_answer_ids: Sequence[int] | None = None,  # kept for old caller compatibility
         image_feature_dim: int = 256,
         question_embedding_dim: int = 128,
         question_feature_dim: int = 128,
@@ -510,16 +637,6 @@ class BaselineVQAModel(nn.Module):
         return logits
 
 
-def count_parameters(model: nn.Module, trainable_only: bool = True) -> int:
-    """
-    Count model parameters.
-    """
-    if trainable_only:
-        return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    return sum(p.numel() for p in model.parameters())
-
-
 def build_baseline_vqa_model(
     vocab_size: int,
     num_answers: int,
@@ -535,7 +652,10 @@ def build_baseline_vqa_model(
     """
     Convenience builder.
 
-    Defaults reproduce the original shared-head CNN baseline.
+    Defaults reproduce a shared-head CNN baseline.
+    For the current object+color task, separate heads use:
+      type_id 0 = object
+      type_id 1 = color
     """
     return BaselineVQAModel(
         vocab_size=vocab_size,
@@ -548,4 +668,224 @@ def build_baseline_vqa_model(
         object_answer_ids=object_answer_ids,
         color_answer_ids=color_answer_ids,
         number_answer_ids=number_answer_ids,
+    )
+
+
+# ---------------------------------------------------------------------
+# GAPCNN student model
+# ---------------------------------------------------------------------
+
+
+class GAPCNNVQAModel(nn.Module):
+    """
+    GAPCNN student model for object/color VQA.
+
+    Deployment-oriented interface:
+      image + type_onehot -> object_head logits + color_head logits
+
+    Training/evaluation convenience:
+      If type_id is provided, the model can also assemble global logits
+      over answer_vocab.json IDs.
+
+    Inputs:
+      images:      [B, 3, H, W]
+      type_onehot: [B, 2], optional
+      type_id:     [B], optional
+
+    Output by default:
+      global_logits: [B, num_answers]
+
+    Output with return_dict=True:
+      {
+        "logits": global_logits,
+        "object_logits": object_logits,
+        "color_logits": color_logits,
+        "type_features": type_features,
+        "image_features": image_features,
+      }
+    """
+
+    def __init__(
+        self,
+        num_answers: int,
+        object_answer_ids: Sequence[int],
+        color_answer_ids: Sequence[int],
+        image_feature_dim: int = 160,
+        type_feature_dim: int = 16,
+        hidden_dim: int = 192,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+
+        object_answer_ids = sorted(set(int(x) for x in object_answer_ids))
+        color_answer_ids = sorted(set(int(x) for x in color_answer_ids))
+
+        if len(object_answer_ids) == 0:
+            raise ValueError("object_answer_ids cannot be empty.")
+        if len(color_answer_ids) == 0:
+            raise ValueError("color_answer_ids cannot be empty.")
+
+        self.num_answers = int(num_answers)
+        self.num_types = 2
+        self.num_object_answers = len(object_answer_ids)
+        self.num_color_answers = len(color_answer_ids)
+
+        self.register_buffer(
+            "object_answer_ids",
+            torch.tensor(object_answer_ids, dtype=torch.long),
+            persistent=True,
+        )
+        self.register_buffer(
+            "color_answer_ids",
+            torch.tensor(color_answer_ids, dtype=torch.long),
+            persistent=True,
+        )
+
+        self.image_encoder = GAPCNNSmallEncoder(
+            image_feature_dim=image_feature_dim,
+        )
+
+        # Deployment-friendly type conditioning:
+        # pass one-hot [object, color] into a Linear layer.
+        self.type_proj = nn.Sequential(
+            nn.Linear(self.num_types, type_feature_dim),
+            nn.ReLU(inplace=True),
+        )
+
+        fusion_dim = image_feature_dim + type_feature_dim
+
+        self.object_head = make_mlp(
+            in_dim=fusion_dim,
+            hidden_dim=hidden_dim,
+            out_dim=self.num_object_answers,
+            dropout=dropout,
+        )
+
+        self.color_head = make_mlp(
+            in_dim=fusion_dim,
+            hidden_dim=hidden_dim,
+            out_dim=self.num_color_answers,
+            dropout=dropout,
+        )
+
+    def _make_type_onehot(
+        self,
+        type_id: torch.Tensor,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        return F.one_hot(type_id, num_classes=self.num_types).to(dtype=dtype)
+
+    def _make_global_logits(
+        self,
+        object_logits: torch.Tensor,
+        color_logits: torch.Tensor,
+        type_id: torch.Tensor,
+    ) -> torch.Tensor:
+        batch_size = type_id.shape[0]
+
+        logits = object_logits.new_full(
+            (batch_size, self.num_answers),
+            fill_value=-1e4,
+        )
+
+        object_rows = torch.nonzero(type_id == 0, as_tuple=False).flatten()
+        color_rows = torch.nonzero(type_id == 1, as_tuple=False).flatten()
+
+        if object_rows.numel() > 0:
+            row_index = object_rows.unsqueeze(1)
+            col_index = self.object_answer_ids.to(logits.device).unsqueeze(0)
+            logits[row_index, col_index] = object_logits[object_rows].to(logits.dtype)
+
+        if color_rows.numel() > 0:
+            row_index = color_rows.unsqueeze(1)
+            col_index = self.color_answer_ids.to(logits.device).unsqueeze(0)
+            logits[row_index, col_index] = color_logits[color_rows].to(logits.dtype)
+
+        return logits
+
+    def forward_heads(
+        self,
+        images: torch.Tensor,
+        type_onehot: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Clean deployment-style forward path.
+
+        Returns:
+          object_logits: [B, num_object_answers]
+          color_logits:  [B, num_color_answers]
+        """
+        image_features = self.image_encoder(images)
+        type_features = self.type_proj(type_onehot.to(dtype=image_features.dtype))
+
+        fused = torch.cat([image_features, type_features], dim=1)
+
+        object_logits = self.object_head(fused)
+        color_logits = self.color_head(fused)
+
+        return object_logits, color_logits
+
+    def forward(
+        self,
+        images: torch.Tensor,
+        type_onehot: torch.Tensor | None = None,
+        type_id: torch.Tensor | None = None,
+        return_dict: bool = False,
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
+        if type_onehot is None:
+            if type_id is None:
+                raise ValueError("GAPCNNVQAModel requires type_onehot or type_id.")
+            type_onehot = self._make_type_onehot(type_id, dtype=images.dtype)
+
+        if type_id is None:
+            # Training/eval convenience.
+            # For deployment/export, prefer passing type_onehot and using forward_heads.
+            type_id = torch.argmax(type_onehot, dim=1)
+
+        image_features = self.image_encoder(images)
+        type_features = self.type_proj(type_onehot.to(dtype=image_features.dtype))
+
+        fused = torch.cat([image_features, type_features], dim=1)
+
+        object_logits = self.object_head(fused)
+        color_logits = self.color_head(fused)
+
+        global_logits = self._make_global_logits(
+            object_logits=object_logits,
+            color_logits=color_logits,
+            type_id=type_id,
+        )
+
+        if return_dict:
+            return {
+                "logits": global_logits,
+                "object_logits": object_logits,
+                "color_logits": color_logits,
+                "type_features": type_features,
+                "image_features": image_features,
+            }
+
+        return global_logits
+
+
+def build_gapcnn_s_vqa_model(
+    num_answers: int,
+    object_answer_ids: Sequence[int],
+    color_answer_ids: Sequence[int],
+    image_feature_dim: int = 160,
+    type_feature_dim: int = 16,
+    hidden_dim: int = 192,
+    dropout: float = 0.1,
+) -> GAPCNNVQAModel:
+    """
+    Build GAPCNN-S object/color VQA student.
+    """
+    return GAPCNNVQAModel(
+        num_answers=num_answers,
+        object_answer_ids=object_answer_ids,
+        color_answer_ids=color_answer_ids,
+        image_feature_dim=image_feature_dim,
+        type_feature_dim=type_feature_dim,
+        hidden_dim=hidden_dim,
+        dropout=dropout,
     )

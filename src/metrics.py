@@ -1,26 +1,31 @@
 """
-Metrics for COCO-QA training/evaluation.
+Metrics for COCO-QA object+color training/evaluation.
 
 Main metrics:
   - overall accuracy
-  - per-question-type accuracy
+  - object accuracy
+  - color accuracy
   - average loss tracking
+  - top confusion pairs
 
 Question type IDs:
   0 = object
-  1 = number
-  2 = color
+  1 = color
 """
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import torch
 
 
 ID_TO_TYPE = {
     0: "object",
-    1: "number",
-    2: "color",
+    1: "color",
+}
+
+TYPE_TO_ID = {
+    "object": 0,
+    "color": 1,
 }
 
 
@@ -94,21 +99,28 @@ class AccuracyTracker:
         targets: torch.Tensor,
         type_ids: torch.Tensor,
     ) -> None:
+        """
+        Args:
+          logits:
+            Global logits [B, num_answers].
+          targets:
+            Global answer IDs [B].
+          type_ids:
+            0=object, 1=color.
+        """
         preds = logits.argmax(dim=1)
-
         correct = preds == targets
 
         self.correct_total += correct.sum().item()
         self.count_total += targets.numel()
 
-        for type_id in ID_TO_TYPE.keys():
+        for type_id, type_name in ID_TO_TYPE.items():
             mask = type_ids == type_id
             count = mask.sum().item()
 
             if count == 0:
                 continue
 
-            type_name = ID_TO_TYPE[type_id]
             self.correct_by_type[type_name] += correct[mask].sum().item()
             self.count_by_type[type_name] += count
 
@@ -138,6 +150,55 @@ class AccuracyTracker:
         return out
 
 
+class ConfusionTracker:
+    """
+    Tracks top prediction confusions.
+
+    Stores pairs:
+      ground_truth_answer -> predicted_answer
+
+    Useful for qualitative analysis.
+    """
+
+    def __init__(
+        self,
+        id_to_answer: dict[int, str] | dict[str, str],
+    ) -> None:
+        self.id_to_answer = {
+            int(k): v for k, v in id_to_answer.items()
+        }
+        self.reset()
+
+    def reset(self) -> None:
+        self.counter = Counter()
+
+    @torch.no_grad()
+    def update(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+    ) -> None:
+        preds = logits.argmax(dim=1)
+
+        preds_cpu = preds.detach().cpu().tolist()
+        targets_cpu = targets.detach().cpu().tolist()
+
+        for pred_id, target_id in zip(preds_cpu, targets_cpu):
+            if pred_id == target_id:
+                continue
+
+            pred_answer = self.id_to_answer.get(int(pred_id), f"<unk:{pred_id}>")
+            target_answer = self.id_to_answer.get(int(target_id), f"<unk:{target_id}>")
+
+            self.counter[(target_answer, pred_answer)] += 1
+
+    def topk(self, k: int = 20) -> list[tuple[str, str, int]]:
+        return [
+            (target, pred, count)
+            for (target, pred), count in self.counter.most_common(k)
+        ]
+
+
 def format_metrics(metrics: dict, prefix: str = "") -> str:
     """
     Format metrics dict into a compact readable string.
@@ -153,9 +214,26 @@ def format_metrics(metrics: dict, prefix: str = "") -> str:
     if "accuracy" in metrics:
         parts.append(f"acc={metrics['accuracy']:.4f}")
 
-    for type_name in ["object", "color", "number"]:
+    for type_name in ["object", "color"]:
         key = f"accuracy_{type_name}"
         if key in metrics:
             parts.append(f"{type_name}_acc={metrics[key]:.4f}")
 
     return prefix + " | ".join(parts)
+
+
+def print_top_confusions(
+    confusions: list[tuple[str, str, int]],
+    title: str = "Top confusions:",
+) -> None:
+    """
+    Pretty-print top confusions.
+    """
+    print(title)
+
+    if not confusions:
+        print("  None")
+        return
+
+    for target, pred, count in confusions:
+        print(f"  {target} -> {pred}: {count}")
