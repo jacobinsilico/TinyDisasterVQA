@@ -7,6 +7,7 @@ Current final task:
 Supported image encoders:
   - cnn: small CNN trained from scratch
   - mobilenet_v2: ImageNet-pretrained MobileNetV2 backbone
+  - mobilenet_v3_large: ImageNet-pretrained MobileNetV3-Large backbone
   - gapcnn_s: GAP9/NE16-friendly small CNN encoder
 
 Supported model families:
@@ -32,7 +33,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torchvision.models import MobileNet_V2_Weights, mobilenet_v2
+from torchvision.models import (
+    MobileNet_V2_Weights,
+    MobileNet_V3_Large_Weights,
+    mobilenet_v2,
+    mobilenet_v3_large,
+)
 
 
 # Object/color-only type mapping.
@@ -286,6 +292,60 @@ class MobileNetV2Encoder(nn.Module):
         x = self.proj(x)
         return x
 
+class MobileNetV3LargeEncoder(nn.Module):
+    """
+    MobileNetV3-Large image encoder.
+
+    Uses ImageNet-pretrained MobileNetV3-Large by default.
+
+    Input:
+      image: [B, 3, H, W]
+
+    Output:
+      image_features: [B, image_feature_dim]
+    """
+
+    def __init__(
+        self,
+        image_feature_dim: int = 256,
+        pretrained: bool = True,
+        freeze_backbone: bool = False,
+    ) -> None:
+        super().__init__()
+
+        weights = MobileNet_V3_Large_Weights.DEFAULT if pretrained else None
+        backbone = mobilenet_v3_large(weights=weights)
+
+        self.features = backbone.features
+
+        # In torchvision MobileNetV3-Large, classifier[0] maps from 960 features.
+        # This is more robust than hardcoding 960.
+        mobilenet_feature_dim = backbone.classifier[0].in_features
+
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+
+        self.proj = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(mobilenet_feature_dim, image_feature_dim),
+            nn.ReLU(inplace=True),
+        )
+
+        if freeze_backbone:
+            self.freeze_backbone()
+
+    def freeze_backbone(self) -> None:
+        for param in self.features.parameters():
+            param.requires_grad = False
+
+    def unfreeze_backbone(self) -> None:
+        for param in self.features.parameters():
+            param.requires_grad = True
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        x = self.features(images)
+        x = self.pool(x)
+        x = self.proj(x)
+        return x
 
 def build_image_encoder(
     model_name: str,
@@ -301,6 +361,7 @@ def build_image_encoder(
       - small_cnn
       - gapcnn_s
       - mobilenet_v2
+      - mobilenet_v3_large
     """
     model_name = model_name.lower()
 
@@ -333,9 +394,21 @@ def build_image_encoder(
             freeze_backbone=freeze_image_encoder,
         )
 
+    if model_name in {
+        "mobilenet_v3_large",
+        "mobilenetv3_large",
+        "mobilenet_v3",
+        "mobilenetv3",
+    }:
+        return MobileNetV3LargeEncoder(
+            image_feature_dim=image_feature_dim,
+            pretrained=pretrained,
+            freeze_backbone=freeze_image_encoder,
+        )
+
     raise ValueError(
         f"Unknown model_name='{model_name}'. "
-        f"Supported: cnn, gapcnn_s, mobilenet_v2"
+        f"Supported: cnn, gapcnn_s, mobilenet_v2, mobilenet_v3_large"
     )
 
 
