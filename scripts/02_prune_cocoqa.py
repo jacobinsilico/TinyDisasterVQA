@@ -14,12 +14,13 @@ Output:
   data/processed/cocoqa_pruned_stats.json
 
 Strategy:
+  - Keep object/color questions only
   - Drop location questions
-  - Keep object/color/number questions
+  - Drop number/counting questions
+  - Normalize conservative singular/plural answer variants
   - Build answer vocab from TRAIN ONLY
   - Keep top-K object answers
   - Keep all color answers
-  - Keep all number answers
   - Filter original test split to train answer vocab
   - Split original test split into val/test by image_id
   - Cap train/val/test samples per answer separately
@@ -32,7 +33,134 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 
-QUESTION_TYPES_TO_KEEP = {"object", "color", "number"}
+QUESTION_TYPES_TO_KEEP = {"object", "color"}
+
+
+# Conservative singular/plural normalization only.
+# No semantic merges: e.g. jet != airplane, bicycle != motorcycle.
+PLURAL_TO_SINGULAR = {
+    # common COCO / COCO-QA object plurals
+    "airplanes": "airplane",
+    "apples": "apple",
+    "backpacks": "backpack",
+    "bananas": "banana",
+    "bears": "bear",
+    "beds": "bed",
+    "benches": "bench",
+    "bicycles": "bicycle",
+    "birds": "bird",
+    "boats": "boat",
+    "books": "book",
+    "bottles": "bottle",
+    "bowls": "bowl",
+    "buses": "bus",
+    "cakes": "cake",
+    "cars": "car",
+    "carrots": "carrot",
+    "cats": "cat",
+    "chairs": "chair",
+    "clocks": "clock",
+    "couches": "couch",
+    "cows": "cow",
+    "cups": "cup",
+    "dogs": "dog",
+    "donuts": "donut",
+    "elephants": "elephant",
+    "forks": "fork",
+    "frisbees": "frisbee",
+    "giraffes": "giraffe",
+    "handbags": "handbag",
+    "horses": "horse",
+    "jets": "jet",
+    "keyboards": "keyboard",
+    "kites": "kite",
+    "knives": "knife",
+    "laptops": "laptop",
+    "microwaves": "microwave",
+    "motorcycles": "motorcycle",
+    "oranges": "orange",
+    "ovens": "oven",
+    "parking meters": "parking meter",
+    "persons": "person",
+    "people": "person",
+    "pizzas": "pizza",
+    "plates": "plate",
+    "remotes": "remote",
+    "refrigerators": "refrigerator",
+    "sandwiches": "sandwich",
+    "sheep": "sheep",
+    "skateboards": "skateboard",
+    "snowboards": "snowboard",
+    "spoons": "spoon",
+    "suitcases": "suitcase",
+    "surfboards": "surfboard",
+    "tables": "table",
+    "ties": "tie",
+    "toilets": "toilet",
+    "toothbrushes": "toothbrush",
+    "towers": "tower",
+    "trains": "train",
+    "trucks": "truck",
+    "umbrellas": "umbrella",
+    "vases": "vase",
+    "zebras": "zebra",
+
+    # common human plurals
+    "men": "man",
+    "women": "woman",
+    "children": "child",
+    "boys": "boy",
+    "girls": "girl",
+
+    # multi-word variants
+    "baseball bats": "baseball bat",
+    "baseball gloves": "baseball glove",
+    "cell phones": "cell phone",
+    "dining tables": "dining table",
+    "fire hydrants": "fire hydrant",
+    "hot dogs": "hot dog",
+    "potted plants": "potted plant",
+    "sports balls": "sports ball",
+    "stop signs": "stop sign",
+    "teddy bears": "teddy bear",
+    "tennis rackets": "tennis racket",
+    "traffic lights": "traffic light",
+    "tv monitors": "tv monitor",
+    "wine glasses": "wine glass",
+}
+
+
+def normalize_answer(answer: str) -> str:
+    """Normalize answer strings conservatively.
+
+    This intentionally only handles formatting and singular/plural variants.
+    It does NOT merge semantic neighbors like jet/airplane or car/truck.
+    """
+    ans = answer.strip().lower()
+    ans = " ".join(ans.split())
+
+    if ans in PLURAL_TO_SINGULAR:
+        return PLURAL_TO_SINGULAR[ans]
+
+    return ans
+
+
+def normalize_samples(samples: list[dict]) -> list[dict]:
+    out = []
+
+    for sample in samples:
+        sample = dict(sample)
+        original_answer = sample["answer"]
+        normalized_answer = normalize_answer(original_answer)
+
+        sample["answer"] = normalized_answer
+
+        if normalized_answer != original_answer:
+            sample["answer_original"] = original_answer
+
+        out.append(sample)
+
+    return out
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -69,16 +197,11 @@ def build_answer_vocab(train_samples: list[dict], object_top_k: int) -> dict:
         set(s["answer"] for s in train_samples if s["type"] == "color")
     )
 
-    number_answers = sorted(
-        set(s["answer"] for s in train_samples if s["type"] == "number")
-    )
-
     top_object_answers = [ans for ans, _ in object_answers.most_common(object_top_k)]
 
     vocab_answers = []
     vocab_answers.extend(top_object_answers)
     vocab_answers.extend(color_answers)
-    vocab_answers.extend(number_answers)
 
     # Remove duplicates while preserving order.
     seen = set()
@@ -97,7 +220,12 @@ def build_answer_vocab(train_samples: list[dict], object_top_k: int) -> dict:
         "num_answers": len(answer_to_id),
         "object_answers": top_object_answers,
         "color_answers": color_answers,
-        "number_answers": number_answers,
+        "types_kept": sorted(list(QUESTION_TYPES_TO_KEEP)),
+        "normalization": {
+            "mode": "conservative_singular_plural_only",
+            "plural_to_singular": PLURAL_TO_SINGULAR,
+            "semantic_merges": "disabled",
+        },
     }
 
 
@@ -197,6 +325,12 @@ def build_stats(samples: list[dict]) -> dict:
             s["answer"] for s in samples if s["type"] == qtype
         ).most_common(20)
 
+    normalized_counter = Counter(
+        (s.get("answer_original"), s["answer"])
+        for s in samples
+        if "answer_original" in s
+    )
+
     return {
         "num_samples": len(samples),
         "num_unique_images": len(image_counter),
@@ -204,6 +338,14 @@ def build_stats(samples: list[dict]) -> dict:
         "type_counts": dict(type_counter),
         "top_30_answers": answer_counter.most_common(30),
         "top_20_answers_by_type": type_answer_counts,
+        "top_30_normalized_answer_pairs": [
+            {
+                "original": original,
+                "normalized": normalized,
+                "count": count,
+            }
+            for (original, normalized), count in normalized_counter.most_common(30)
+        ],
     }
 
 
@@ -237,7 +379,7 @@ def main() -> None:
     parser.add_argument(
         "--object-top-k",
         type=int,
-        default=50,
+        default=52,
         help="Keep top-K object answers from train split.",
     )
     parser.add_argument(
@@ -276,9 +418,13 @@ def main() -> None:
     train_full = read_jsonl(args.train_full)
     test_full = read_jsonl(args.test_full)
 
-    print("Dropping location questions...")
+    print("Keeping object/color questions only...")
     train_type_filtered = filter_types(train_full)
     test_type_filtered = filter_types(test_full)
+
+    print("Normalizing conservative singular/plural answer variants...")
+    train_type_filtered = normalize_samples(train_type_filtered)
+    test_type_filtered = normalize_samples(test_type_filtered)
 
     print("Building answer vocabulary from train only...")
     vocab = build_answer_vocab(
@@ -288,6 +434,8 @@ def main() -> None:
     answer_to_id = vocab["answer_to_id"]
 
     print(f"Answer vocab size: {vocab['num_answers']}")
+    print(f"Object answers:    {len(vocab['object_answers'])}")
+    print(f"Color answers:     {len(vocab['color_answers'])}")
 
     print("Filtering train/test pool to answer vocabulary...")
     train_pruned = add_answer_ids(train_type_filtered, answer_to_id)
@@ -338,13 +486,17 @@ def main() -> None:
     stats = {
         "config": {
             "types_kept": sorted(list(QUESTION_TYPES_TO_KEEP)),
-            "dropped_type": "location",
+            "dropped_types": ["location", "number"],
             "object_top_k": args.object_top_k,
             "max_train_per_answer": args.max_train_per_answer,
             "max_val_per_answer": args.max_val_per_answer,
             "max_test_per_answer": args.max_test_per_answer,
             "val_fraction_by_image_id": args.val_fraction,
             "seed": args.seed,
+            "answer_normalization": {
+                "mode": "conservative_singular_plural_only",
+                "semantic_merges": "disabled",
+            },
         },
         "train": build_stats(train_pruned),
         "val": build_stats(val_pruned),
