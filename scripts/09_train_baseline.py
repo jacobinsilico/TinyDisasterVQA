@@ -8,6 +8,7 @@ Task:
 Small CNN baseline:
   python scripts/09_train_baseline.py \
     --model-name cnn \
+    --head-type shared \
     --epochs 20 \
     --batch-size 128 \
     --num-workers 2
@@ -15,18 +16,20 @@ Small CNN baseline:
 MobileNetV2 supervised student:
   python scripts/09_train_baseline.py \
     --model-name mobilenet_v2 \
+    --head-type shared \
     --epochs 15 \
     --batch-size 128 \
     --num-workers 2 \
     --lr 3e-4
 
-Frozen MobileNetV2 feature extractor:
+MobileNetV2 with separate type-aware heads:
   python scripts/09_train_baseline.py \
     --model-name mobilenet_v2 \
-    --freeze-image-encoder \
-    --epochs 5 \
+    --head-type separate \
+    --epochs 10 \
     --batch-size 128 \
-    --num-workers 2
+    --num-workers 2 \
+    --lr 3e-4
 """
 
 import argparse
@@ -60,11 +63,69 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
+def read_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        raise FileNotFoundError(f"Missing JSONL file: {path}")
+
+    samples = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                samples.append(json.loads(line))
+
+    return samples
+
+
 def load_answer_vocab(path: Path) -> dict[int, str]:
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
     return {int(k): v for k, v in data["id_to_answer"].items()}
+
+
+def build_answer_ids_by_type(processed_dir: Path) -> dict[str, list[int]]:
+    """
+    Build type-specific answer ID sets.
+
+    We use all resolved manifests to define the known constrained answer
+    spaces per question type. This is not used to learn labels; it only
+    tells the separate heads which global answer IDs are valid for each
+    question type.
+    """
+    paths = [
+        processed_dir / "cocoqa_train_resolved.jsonl",
+        processed_dir / "cocoqa_val_resolved.jsonl",
+        processed_dir / "cocoqa_test_resolved.jsonl",
+    ]
+
+    answer_ids_by_type = {
+        "object": set(),
+        "color": set(),
+        "number": set(),
+    }
+
+    for path in paths:
+        if not path.exists():
+            continue
+
+        for sample in read_jsonl(path):
+            qtype = sample["type"]
+            if qtype not in answer_ids_by_type:
+                continue
+
+            answer_ids_by_type[qtype].add(int(sample["answer_id"]))
+
+    out = {
+        qtype: sorted(ids)
+        for qtype, ids in answer_ids_by_type.items()
+    }
+
+    for qtype, ids in out.items():
+        if not ids:
+            raise ValueError(f"No answer IDs found for question type: {qtype}")
+
+    return out
 
 
 def make_json_serializable(obj: Any) -> Any:
@@ -74,7 +135,7 @@ def make_json_serializable(obj: Any) -> Any:
     if isinstance(obj, dict):
         return {k: make_json_serializable(v) for k, v in obj.items()}
 
-    if isinstance(obj, (list, tuple)):
+    if isinstance(obj, (list, tuple, set)):
         return [make_json_serializable(v) for v in obj]
 
     if isinstance(obj, np.integer):
@@ -93,6 +154,7 @@ def build_config(
     model: nn.Module,
     question_vocab: QuestionVocab,
     id_to_answer: dict[int, str],
+    answer_ids_by_type: dict[str, list[int]],
 ) -> dict:
     config = make_json_serializable(vars(args))
 
@@ -106,6 +168,7 @@ def build_config(
     )
     config["question_vocab_size"] = int(question_vocab.size)
     config["num_answer_classes"] = int(len(id_to_answer))
+    config["answer_ids_by_type"] = make_json_serializable(answer_ids_by_type)
 
     return config
 
@@ -279,6 +342,13 @@ def main() -> None:
         help="Image encoder / VQA model variant.",
     )
     parser.add_argument(
+        "--head-type",
+        type=str,
+        default="shared",
+        choices=["shared", "separate"],
+        help="Classifier head type: shared 70-way head or separate type-aware heads.",
+    )
+    parser.add_argument(
         "--no-pretrained",
         action="store_true",
         help="Disable ImageNet pretrained weights for supported models.",
@@ -286,7 +356,7 @@ def main() -> None:
     parser.add_argument(
         "--freeze-image-encoder",
         action="store_true",
-        help="Freeze the image encoder/backbone. Useful for first MobileNet sanity run.",
+        help="Freeze the image encoder/backbone. Useful for MobileNet sanity runs.",
     )
 
     parser.add_argument("--image-size", type=int, default=128)
@@ -323,6 +393,7 @@ def main() -> None:
     print(f"Device: {device}")
     print(f"AMP: {use_amp}")
     print(f"Model name: {args.model_name}")
+    print(f"Head type: {args.head_type}")
     print(f"Pretrained image encoder: {pretrained}")
     print(f"Freeze image encoder: {args.freeze_image_encoder}")
 
@@ -333,6 +404,14 @@ def main() -> None:
 
     question_vocab = QuestionVocab.load(question_vocab_path)
     id_to_answer = load_answer_vocab(answer_vocab_path)
+
+    answer_ids_by_type = build_answer_ids_by_type(args.processed_dir)
+
+    print()
+    print("Answer IDs by type:")
+    print(f"  object: {len(answer_ids_by_type['object'])}")
+    print(f"  color:  {len(answer_ids_by_type['color'])}")
+    print(f"  number: {len(answer_ids_by_type['number'])}")
 
     print()
     print("Building datasets...")
@@ -390,6 +469,10 @@ def main() -> None:
         model_name=args.model_name,
         pretrained=pretrained,
         freeze_image_encoder=args.freeze_image_encoder,
+        head_type=args.head_type,
+        object_answer_ids=answer_ids_by_type["object"],
+        color_answer_ids=answer_ids_by_type["color"],
+        number_answer_ids=answer_ids_by_type["number"],
     ).to(device)
 
     print(f"Trainable parameters: {count_parameters(model, trainable_only=True):,}")
@@ -424,6 +507,7 @@ def main() -> None:
         model=model,
         question_vocab=question_vocab,
         id_to_answer=id_to_answer,
+        answer_ids_by_type=answer_ids_by_type,
     )
 
     with config_path.open("w", encoding="utf-8") as f:
@@ -499,6 +583,7 @@ def main() -> None:
             "epoch": epoch,
             "lr": current_lr,
             "model_name": args.model_name,
+            "head_type": args.head_type,
             "pretrained": pretrained,
             "freeze_image_encoder": args.freeze_image_encoder,
             "train_loss": train_metrics["loss"],

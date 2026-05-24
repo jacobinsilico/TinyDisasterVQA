@@ -8,12 +8,18 @@ Available image encoders:
   - cnn: small CNN trained from scratch
   - mobilenet_v2: ImageNet-pretrained MobileNetV2 backbone
 
+Available classifier heads:
+  - shared: one classifier over all answer classes
+  - separate: type-aware classifier heads for object/color/number answers
+
 Architecture:
   image encoder
   + word embedding / masked mean pooling question encoder
   + question type embedding
-  + MLP classifier
+  + classifier head(s)
 """
+
+from typing import Sequence
 
 import torch
 import torch.nn as nn
@@ -97,17 +103,10 @@ class MobileNetV2Encoder(nn.Module):
     ) -> None:
         super().__init__()
 
-        if pretrained:
-            weights = MobileNet_V2_Weights.DEFAULT
-        else:
-            weights = None
-
+        weights = MobileNet_V2_Weights.DEFAULT if pretrained else None
         backbone = mobilenet_v2(weights=weights)
 
-        # Keep convolutional feature extractor only.
         self.features = backbone.features
-
-        # MobileNetV2 final conv feature dimension.
         mobilenet_feature_dim = 1280
 
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
@@ -190,6 +189,190 @@ class MeanPoolQuestionEncoder(nn.Module):
         return features
 
 
+def make_mlp(
+    in_dim: int,
+    hidden_dim: int,
+    out_dim: int,
+    dropout: float,
+) -> nn.Sequential:
+    return nn.Sequential(
+        nn.Linear(in_dim, hidden_dim),
+        nn.ReLU(inplace=True),
+        nn.Dropout(dropout),
+        nn.Linear(hidden_dim, hidden_dim),
+        nn.ReLU(inplace=True),
+        nn.Dropout(dropout),
+        nn.Linear(hidden_dim, out_dim),
+    )
+
+
+class TypeAwareClassifier(nn.Module):
+    """
+    Classifier over global answer IDs.
+
+    head_type="shared":
+      One classifier produces [B, num_answers].
+
+    head_type="separate":
+      Three classifiers produce logits only for valid answer IDs:
+        type_id 0 = object
+        type_id 1 = number
+        type_id 2 = color
+
+      Output is still [B, num_answers].
+      Invalid answer logits are set to a large negative value.
+    """
+
+    def __init__(
+        self,
+        fusion_dim: int,
+        hidden_dim: int,
+        num_answers: int,
+        dropout: float,
+        head_type: str = "shared",
+        object_answer_ids: Sequence[int] | None = None,
+        color_answer_ids: Sequence[int] | None = None,
+        number_answer_ids: Sequence[int] | None = None,
+    ) -> None:
+        super().__init__()
+
+        self.head_type = head_type.lower()
+        self.num_answers = int(num_answers)
+
+        if self.head_type == "shared":
+            self.shared_head = make_mlp(
+                in_dim=fusion_dim,
+                hidden_dim=hidden_dim,
+                out_dim=num_answers,
+                dropout=dropout,
+            )
+            return
+
+        if self.head_type != "separate":
+            raise ValueError(
+                f"Unknown head_type='{head_type}'. "
+                f"Supported: shared, separate"
+            )
+
+        if object_answer_ids is None or color_answer_ids is None or number_answer_ids is None:
+            raise ValueError(
+                "Separate heads require object_answer_ids, color_answer_ids, "
+                "and number_answer_ids."
+            )
+
+        object_answer_ids = sorted(set(int(x) for x in object_answer_ids))
+        color_answer_ids = sorted(set(int(x) for x in color_answer_ids))
+        number_answer_ids = sorted(set(int(x) for x in number_answer_ids))
+
+        if len(object_answer_ids) == 0:
+            raise ValueError("object_answer_ids cannot be empty.")
+        if len(color_answer_ids) == 0:
+            raise ValueError("color_answer_ids cannot be empty.")
+        if len(number_answer_ids) == 0:
+            raise ValueError("number_answer_ids cannot be empty.")
+
+        self.register_buffer(
+            "object_answer_ids",
+            torch.tensor(object_answer_ids, dtype=torch.long),
+            persistent=True,
+        )
+        self.register_buffer(
+            "color_answer_ids",
+            torch.tensor(color_answer_ids, dtype=torch.long),
+            persistent=True,
+        )
+        self.register_buffer(
+            "number_answer_ids",
+            torch.tensor(number_answer_ids, dtype=torch.long),
+            persistent=True,
+        )
+
+        self.object_head = make_mlp(
+            in_dim=fusion_dim,
+            hidden_dim=hidden_dim,
+            out_dim=len(object_answer_ids),
+            dropout=dropout,
+        )
+
+        self.color_head = make_mlp(
+            in_dim=fusion_dim,
+            hidden_dim=hidden_dim,
+            out_dim=len(color_answer_ids),
+            dropout=dropout,
+        )
+
+        self.number_head = make_mlp(
+            in_dim=fusion_dim,
+            hidden_dim=hidden_dim,
+            out_dim=len(number_answer_ids),
+            dropout=dropout,
+        )
+
+    def _scatter_head_logits(
+        self,
+        global_logits: torch.Tensor,
+        fused: torch.Tensor,
+        type_id: torch.Tensor,
+        target_type_id: int,
+        head: nn.Module,
+        answer_ids: torch.Tensor,
+    ) -> None:
+        rows = torch.nonzero(type_id == target_type_id, as_tuple=False).flatten()
+
+        if rows.numel() == 0:
+            return
+
+        local_logits = head(fused[rows])  # [N_type, num_type_answers]
+
+        row_index = rows.unsqueeze(1)
+        col_index = answer_ids.to(global_logits.device).unsqueeze(0)
+
+        global_logits[row_index, col_index] = local_logits
+
+    def forward(self, fused: torch.Tensor, type_id: torch.Tensor) -> torch.Tensor:
+        if self.head_type == "shared":
+            return self.shared_head(fused)
+
+        # Large negative value, safe for AMP/fp16.
+        logits = fused.new_full(
+            (fused.shape[0], self.num_answers),
+            fill_value=-1e4,
+        )
+
+        # Dataset type IDs:
+        # 0 = object
+        # 1 = number
+        # 2 = color
+        self._scatter_head_logits(
+            global_logits=logits,
+            fused=fused,
+            type_id=type_id,
+            target_type_id=0,
+            head=self.object_head,
+            answer_ids=self.object_answer_ids,
+        )
+
+        self._scatter_head_logits(
+            global_logits=logits,
+            fused=fused,
+            type_id=type_id,
+            target_type_id=1,
+            head=self.number_head,
+            answer_ids=self.number_answer_ids,
+        )
+
+        self._scatter_head_logits(
+            global_logits=logits,
+            fused=fused,
+            type_id=type_id,
+            target_type_id=2,
+            head=self.color_head,
+            answer_ids=self.color_answer_ids,
+        )
+
+        return logits
+
+
 def build_image_encoder(
     model_name: str,
     image_feature_dim: int,
@@ -206,10 +389,6 @@ def build_image_encoder(
     model_name = model_name.lower()
 
     if model_name in {"cnn", "small_cnn", "baseline_cnn"}:
-        if pretrained:
-            # Ignored for scratch CNN, but harmless.
-            pass
-
         encoder = SmallCNNEncoder(
             image_feature_dim=image_feature_dim,
         )
@@ -235,7 +414,7 @@ def build_image_encoder(
 
 class BaselineVQAModel(nn.Module):
     """
-    VQA model with configurable image encoder.
+    VQA model with configurable image encoder and classifier head.
 
     Inputs:
       images:       [B, 3, H, W]
@@ -256,6 +435,10 @@ class BaselineVQAModel(nn.Module):
         model_name: str = "cnn",
         pretrained: bool = True,
         freeze_image_encoder: bool = False,
+        head_type: str = "shared",
+        object_answer_ids: Sequence[int] | None = None,
+        color_answer_ids: Sequence[int] | None = None,
+        number_answer_ids: Sequence[int] | None = None,
         image_feature_dim: int = 256,
         question_embedding_dim: int = 128,
         question_feature_dim: int = 128,
@@ -268,6 +451,7 @@ class BaselineVQAModel(nn.Module):
         self.model_name = model_name
         self.pretrained = pretrained
         self.freeze_image_encoder = freeze_image_encoder
+        self.head_type = head_type
 
         self.image_encoder = build_image_encoder(
             model_name=model_name,
@@ -291,14 +475,15 @@ class BaselineVQAModel(nn.Module):
 
         fusion_dim = image_feature_dim + question_feature_dim + type_embedding_dim
 
-        self.classifier = nn.Sequential(
-            nn.Linear(fusion_dim, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, num_answers),
+        self.classifier = TypeAwareClassifier(
+            fusion_dim=fusion_dim,
+            hidden_dim=hidden_dim,
+            num_answers=num_answers,
+            dropout=dropout,
+            head_type=head_type,
+            object_answer_ids=object_answer_ids,
+            color_answer_ids=color_answer_ids,
+            number_answer_ids=number_answer_ids,
         )
 
     def forward(
@@ -317,7 +502,7 @@ class BaselineVQAModel(nn.Module):
             dim=1,
         )
 
-        logits = self.classifier(fused)
+        logits = self.classifier(fused, type_id)
         return logits
 
 
@@ -338,11 +523,15 @@ def build_baseline_vqa_model(
     model_name: str = "cnn",
     pretrained: bool = True,
     freeze_image_encoder: bool = False,
+    head_type: str = "shared",
+    object_answer_ids: Sequence[int] | None = None,
+    color_answer_ids: Sequence[int] | None = None,
+    number_answer_ids: Sequence[int] | None = None,
 ) -> BaselineVQAModel:
     """
     Convenience builder.
 
-    Default is the original small CNN baseline, so old scripts still work.
+    Defaults reproduce the original shared-head CNN baseline.
     """
     return BaselineVQAModel(
         vocab_size=vocab_size,
@@ -351,4 +540,8 @@ def build_baseline_vqa_model(
         model_name=model_name,
         pretrained=pretrained,
         freeze_image_encoder=freeze_image_encoder,
+        head_type=head_type,
+        object_answer_ids=object_answer_ids,
+        color_answer_ids=color_answer_ids,
+        number_answer_ids=number_answer_ids,
     )
