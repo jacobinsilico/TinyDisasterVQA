@@ -1,23 +1,31 @@
 #!/usr/bin/env python3
 """
-Train the supervised baseline VQA model.
+Train a supervised VQA model.
 
 Task:
   image + question + question type -> 70-class answer prediction
 
-Local smoke test:
+Small CNN baseline:
   python scripts/09_train_baseline.py \
-    --train-limit 2000 \
-    --val-limit 1000 \
-    --epochs 3 \
-    --batch-size 32 \
-    --num-workers 2 \
-    --log-interval 20
-
-Full training later, preferably on GPU/Colab:
-  python scripts/09_train_baseline.py \
+    --model-name cnn \
     --epochs 20 \
-    --batch-size 64 \
+    --batch-size 128 \
+    --num-workers 2
+
+MobileNetV2 supervised student:
+  python scripts/09_train_baseline.py \
+    --model-name mobilenet_v2 \
+    --epochs 15 \
+    --batch-size 128 \
+    --num-workers 2 \
+    --lr 3e-4
+
+Frozen MobileNetV2 feature extractor:
+  python scripts/09_train_baseline.py \
+    --model-name mobilenet_v2 \
+    --freeze-image-encoder \
+    --epochs 5 \
+    --batch-size 128 \
     --num-workers 2
 """
 
@@ -60,9 +68,6 @@ def load_answer_vocab(path: Path) -> dict[int, str]:
 
 
 def make_json_serializable(obj: Any) -> Any:
-    """
-    Convert objects such as pathlib.Path into JSON-safe values.
-    """
     if isinstance(obj, Path):
         return str(obj)
 
@@ -93,7 +98,12 @@ def build_config(
 
     config["device"] = str(device)
     config["use_amp"] = bool(use_amp)
-    config["num_model_parameters"] = int(count_parameters(model))
+    config["num_model_parameters_trainable"] = int(
+        count_parameters(model, trainable_only=True)
+    )
+    config["num_model_parameters_total"] = int(
+        count_parameters(model, trainable_only=False)
+    )
     config["question_vocab_size"] = int(question_vocab.size)
     config["num_answer_classes"] = int(len(id_to_answer))
 
@@ -255,7 +265,29 @@ def main() -> None:
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--processed-dir", type=Path, default=Path("data/processed"))
-    parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints/baseline"))
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        default=Path("checkpoints/baseline"),
+    )
+
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default="cnn",
+        choices=["cnn", "mobilenet_v2"],
+        help="Image encoder / VQA model variant.",
+    )
+    parser.add_argument(
+        "--no-pretrained",
+        action="store_true",
+        help="Disable ImageNet pretrained weights for supported models.",
+    )
+    parser.add_argument(
+        "--freeze-image-encoder",
+        action="store_true",
+        help="Freeze the image encoder/backbone. Useful for first MobileNet sanity run.",
+    )
 
     parser.add_argument("--image-size", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=32)
@@ -286,9 +318,13 @@ def main() -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = (device.type == "cuda") and (not args.no_amp)
+    pretrained = not args.no_pretrained
 
     print(f"Device: {device}")
     print(f"AMP: {use_amp}")
+    print(f"Model name: {args.model_name}")
+    print(f"Pretrained image encoder: {pretrained}")
+    print(f"Freeze image encoder: {args.freeze_image_encoder}")
 
     train_manifest = args.processed_dir / "cocoqa_train_resolved.jsonl"
     val_manifest = args.processed_dir / "cocoqa_val_resolved.jsonl"
@@ -351,14 +387,18 @@ def main() -> None:
         vocab_size=question_vocab.size,
         num_answers=len(id_to_answer),
         pad_id=question_vocab.pad_id,
+        model_name=args.model_name,
+        pretrained=pretrained,
+        freeze_image_encoder=args.freeze_image_encoder,
     ).to(device)
 
-    print(f"Model parameters: {count_parameters(model):,}")
+    print(f"Trainable parameters: {count_parameters(model, trainable_only=True):,}")
+    print(f"Total parameters:     {count_parameters(model, trainable_only=False):,}")
 
     criterion = nn.CrossEntropyLoss()
 
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        (p for p in model.parameters() if p.requires_grad),
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
@@ -458,6 +498,9 @@ def main() -> None:
         row = {
             "epoch": epoch,
             "lr": current_lr,
+            "model_name": args.model_name,
+            "pretrained": pretrained,
+            "freeze_image_encoder": args.freeze_image_encoder,
             "train_loss": train_metrics["loss"],
             "train_acc": train_metrics["accuracy"],
             "train_acc_object": train_metrics["accuracy_object"],

@@ -1,21 +1,24 @@
 """
-Baseline VQA model for pruned COCO-QA.
+VQA models for pruned COCO-QA.
 
 Task:
   image + question + question type -> 70-class answer prediction
 
-Architecture:
-  - small CNN image encoder
-  - word embedding + masked mean pooling question encoder
-  - question type embedding
-  - MLP classifier
+Available image encoders:
+  - cnn: small CNN trained from scratch
+  - mobilenet_v2: ImageNet-pretrained MobileNetV2 backbone
 
-This is intentionally simple for the first baseline.
+Architecture:
+  image encoder
+  + word embedding / masked mean pooling question encoder
+  + question type embedding
+  + MLP classifier
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
+from torchvision.models import MobileNet_V2_Weights, mobilenet_v2
 
 
 class SmallCNNEncoder(nn.Module):
@@ -69,6 +72,66 @@ class SmallCNNEncoder(nn.Module):
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         x = self.conv(images)
+        x = self.proj(x)
+        return x
+
+
+class MobileNetV2Encoder(nn.Module):
+    """
+    MobileNetV2 image encoder.
+
+    Uses ImageNet-pretrained MobileNetV2 by default.
+
+    Input:
+      image: [B, 3, H, W]
+
+    Output:
+      image_features: [B, image_feature_dim]
+    """
+
+    def __init__(
+        self,
+        image_feature_dim: int = 256,
+        pretrained: bool = True,
+        freeze_backbone: bool = False,
+    ) -> None:
+        super().__init__()
+
+        if pretrained:
+            weights = MobileNet_V2_Weights.DEFAULT
+        else:
+            weights = None
+
+        backbone = mobilenet_v2(weights=weights)
+
+        # Keep convolutional feature extractor only.
+        self.features = backbone.features
+
+        # MobileNetV2 final conv feature dimension.
+        mobilenet_feature_dim = 1280
+
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+
+        self.proj = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(mobilenet_feature_dim, image_feature_dim),
+            nn.ReLU(inplace=True),
+        )
+
+        if freeze_backbone:
+            self.freeze_backbone()
+
+    def freeze_backbone(self) -> None:
+        for param in self.features.parameters():
+            param.requires_grad = False
+
+    def unfreeze_backbone(self) -> None:
+        for param in self.features.parameters():
+            param.requires_grad = True
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        x = self.features(images)
+        x = self.pool(x)
         x = self.proj(x)
         return x
 
@@ -127,9 +190,52 @@ class MeanPoolQuestionEncoder(nn.Module):
         return features
 
 
+def build_image_encoder(
+    model_name: str,
+    image_feature_dim: int,
+    pretrained: bool = True,
+    freeze_image_encoder: bool = False,
+) -> nn.Module:
+    """
+    Build image encoder by name.
+
+    Supported:
+      - cnn
+      - mobilenet_v2
+    """
+    model_name = model_name.lower()
+
+    if model_name in {"cnn", "small_cnn", "baseline_cnn"}:
+        if pretrained:
+            # Ignored for scratch CNN, but harmless.
+            pass
+
+        encoder = SmallCNNEncoder(
+            image_feature_dim=image_feature_dim,
+        )
+
+        if freeze_image_encoder:
+            for param in encoder.parameters():
+                param.requires_grad = False
+
+        return encoder
+
+    if model_name in {"mobilenet_v2", "mobilenetv2"}:
+        return MobileNetV2Encoder(
+            image_feature_dim=image_feature_dim,
+            pretrained=pretrained,
+            freeze_backbone=freeze_image_encoder,
+        )
+
+    raise ValueError(
+        f"Unknown model_name='{model_name}'. "
+        f"Supported: cnn, mobilenet_v2"
+    )
+
+
 class BaselineVQAModel(nn.Module):
     """
-    Simple baseline model.
+    VQA model with configurable image encoder.
 
     Inputs:
       images:       [B, 3, H, W]
@@ -147,6 +253,9 @@ class BaselineVQAModel(nn.Module):
         num_answers: int,
         num_types: int = 3,
         pad_id: int = 0,
+        model_name: str = "cnn",
+        pretrained: bool = True,
+        freeze_image_encoder: bool = False,
         image_feature_dim: int = 256,
         question_embedding_dim: int = 128,
         question_feature_dim: int = 128,
@@ -156,8 +265,15 @@ class BaselineVQAModel(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.image_encoder = SmallCNNEncoder(
+        self.model_name = model_name
+        self.pretrained = pretrained
+        self.freeze_image_encoder = freeze_image_encoder
+
+        self.image_encoder = build_image_encoder(
+            model_name=model_name,
             image_feature_dim=image_feature_dim,
+            pretrained=pretrained,
+            freeze_image_encoder=freeze_image_encoder,
         )
 
         self.question_encoder = MeanPoolQuestionEncoder(
@@ -219,12 +335,20 @@ def build_baseline_vqa_model(
     vocab_size: int,
     num_answers: int,
     pad_id: int = 0,
+    model_name: str = "cnn",
+    pretrained: bool = True,
+    freeze_image_encoder: bool = False,
 ) -> BaselineVQAModel:
     """
-    Convenience builder with default baseline hyperparameters.
+    Convenience builder.
+
+    Default is the original small CNN baseline, so old scripts still work.
     """
     return BaselineVQAModel(
         vocab_size=vocab_size,
         num_answers=num_answers,
         pad_id=pad_id,
+        model_name=model_name,
+        pretrained=pretrained,
+        freeze_image_encoder=freeze_image_encoder,
     )
