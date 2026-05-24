@@ -129,18 +129,46 @@ PLURAL_TO_SINGULAR = {
     "wine glasses": "wine glass",
 }
 
+SEMANTIC_MERGES = {
+    # conservative semantic / near-synonym merges
+    "jet": "airplane",
+    "jets": "airplane",
+
+    "laptop": "computer",
+    "laptops": "computer",
+
+    "cell phone": "phone",
+    "cell phones": "phone",
+    "cellphone": "phone",
+    "cellphones": "phone",
+
+    "tv": "television",
+    "tv monitor": "television",
+    "tv monitors": "television",
+
+    "sofa": "couch",
+    "sofas": "couch",
+}
+
 
 def normalize_answer(answer: str) -> str:
-    """Normalize answer strings conservatively.
+    """Normalize answer strings.
 
-    This intentionally only handles formatting and singular/plural variants.
-    It does NOT merge semantic neighbors like jet/airplane or car/truck.
+    Order:
+      1. formatting
+      2. singular/plural normalization
+      3. conservative semantic merges
+
+    We still avoid broad superclass merges like car/truck/bus -> vehicle.
     """
     ans = answer.strip().lower()
     ans = " ".join(ans.split())
 
     if ans in PLURAL_TO_SINGULAR:
-        return PLURAL_TO_SINGULAR[ans]
+        ans = PLURAL_TO_SINGULAR[ans]
+
+    if ans in SEMANTIC_MERGES:
+        ans = SEMANTIC_MERGES[ans]
 
     return ans
 
@@ -224,7 +252,7 @@ def build_answer_vocab(train_samples: list[dict], object_top_k: int) -> dict:
         "normalization": {
             "mode": "conservative_singular_plural_only",
             "plural_to_singular": PLURAL_TO_SINGULAR,
-            "semantic_merges": "disabled",
+            "semantic_merges": SEMANTIC_MERGES,
         },
     }
 
@@ -522,7 +550,7 @@ def main() -> None:
             "seed": args.seed,
             "answer_normalization": {
                 "mode": "conservative_singular_plural_only",
-                "semantic_merges": "disabled",
+                "semantic_merges": SEMANTIC_MERGES,,
             },
         },
         "train": build_stats(train_pruned),
