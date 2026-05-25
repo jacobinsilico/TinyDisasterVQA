@@ -220,8 +220,13 @@ __marimo__/
 # ADDED BY ME 
 # Images / datasets
 data/images/
-data/coco-annotations/
-data/coco-qa/
+#data/coco-annotations/train/captions_train2014.json
+#data/coco-annotations/val/captions_val2014.json
+
+#data/coco-annotations/train/person_keypoints_train2014.json
+#data/coco-annotations/val/person_keypoints_val2014.json
+data/coco-qa
+data/coco-annotations
 
 # Checkpoints
 checkpoints/
