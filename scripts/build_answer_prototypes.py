@@ -72,7 +72,10 @@ def main() -> None:
         pass
 
     if sentence_transformers_available:
-        print("\n[INFO] sentence-transformers package detected. Loading 'all-MiniLM-L6-v2'...")
+        print("\n================================================================================")
+        print(">>> EMBEDDING BACKEND: sentence-transformers (REAL TEXT EMBEDDINGS) <<<")
+        print("================================================================================")
+        print("[INFO] sentence-transformers package detected. Loading 'all-MiniLM-L6-v2'...")
         model_name = "sentence-transformers/all-MiniLM-L6-v2"
         try:
             model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -102,7 +105,10 @@ def main() -> None:
             sentence_transformers_available = False
 
     if not sentence_transformers_available:
-        print("\n[WARNING] sentence-transformers is unavailable locally. Using stable, deterministic SHA-256 hash generator.")
+        print("\n================================================================================")
+        print(">>> EMBEDDING BACKEND: fallback hash embeddings (DETERMINISTIC FALLBACK) <<<")
+        print("================================================================================")
+        print("[WARNING] sentence-transformers is unavailable locally. Using stable, deterministic SHA-256 hash generator.")
         model_name = "deterministic-hash-sha256"
 
         obj_list = [get_deterministic_fallback(p, args.embed_dim) for p in object_prompts]

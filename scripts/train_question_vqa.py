@@ -1,6 +1,32 @@
 #!/usr/bin/env python3
 """
 Baseline training and overfitting script for the question-aware VQA model (QuestionVQAModel).
+Colab-Ready and fully compatible with mixed-precision (AMP) CUDA acceleration.
+
+================================================================================
+COLAB SANITY COMMAND LIST (WORKSPACE GUIDE)
+================================================================================
+1. Install requirements:
+   !pip install torch torchvision pillow sentence-transformers matplotlib
+
+2. Run Manifest-Driven Image Downloader (Download whitelisted subset only):
+   !python scripts/04_download_images.py --manifest-dir data/processed --image-root data/images
+
+3. Build Answer Embedding Prototypes (SentenceTransformers or deterministic fallback):
+   !python scripts/build_answer_prototypes.py
+
+4. Run Shape & Norm Verification Smoke Tests:
+   !python scripts/smoke_test_prototype_model.py
+
+5. Train Classifier Student (gapcnn_s, 128x128):
+   !python scripts/train_question_vqa.py --head-type classifier --image-encoder gapcnn_s --image-size 128 --epochs 20 --batch-size 64 --lr 1e-3 --run-name classifier_student --device cuda --amp
+
+6. Train Classifier Teacher (mobilenet_v3_large, 224x224):
+   !python scripts/train_question_vqa.py --head-type classifier --image-encoder mobilenet_v3_large --image-size 224 --epochs 20 --batch-size 64 --lr 3e-4 --run-name classifier_teacher --device cuda --amp
+
+7. Train Prototype Student (gapcnn_s, 128x128, learnable logit scale):
+   !python scripts/train_question_vqa.py --head-type prototype --image-encoder gapcnn_s --image-size 128 --epochs 20 --batch-size 64 --lr 1e-3 --run-name prototype_student --learn-logit-scale --device cuda --amp
+================================================================================
 """
 
 import argparse
@@ -29,6 +55,8 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     epoch: int,
+    scaler: torch.cuda.amp.GradScaler | None = None,
+    use_amp: bool = False,
 ) -> dict[str, float]:
     model.train()
     total_loss = 0.0
@@ -52,18 +80,25 @@ def train_one_epoch(
         batch_size = images.shape[0]
 
         optimizer.zero_grad()
-        object_logits, color_logits = model(images, question_ids, question_len)
+        
+        # Mixed precision context
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            object_logits, color_logits = model(images, question_ids, question_len)
+            loss_dict = compute_type_aware_loss(
+                object_logits=object_logits,
+                color_logits=color_logits,
+                object_answer_id=object_answer_id,
+                color_answer_id=color_answer_id,
+            )
+            loss = loss_dict["loss"]
 
-        loss_dict = compute_type_aware_loss(
-            object_logits=object_logits,
-            color_logits=color_logits,
-            object_answer_id=object_answer_id,
-            color_answer_id=color_answer_id,
-        )
-
-        loss = loss_dict["loss"]
-        loss.backward()
-        optimizer.step()
+        if use_amp and scaler is not None:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         total_loss += loss.item() * batch_size
         total_samples += batch_size
@@ -111,6 +146,7 @@ def evaluate(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
+    use_amp: bool = False,
 ) -> dict[str, float]:
     model.eval()
     total_loss = 0.0
@@ -134,16 +170,15 @@ def evaluate(
 
             batch_size = images.shape[0]
 
-            object_logits, color_logits = model(images, question_ids, question_len)
-
-            loss_dict = compute_type_aware_loss(
-                object_logits=object_logits,
-                color_logits=color_logits,
-                object_answer_id=object_answer_id,
-                color_answer_id=color_answer_id,
-            )
-
-            loss = loss_dict["loss"]
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                object_logits, color_logits = model(images, question_ids, question_len)
+                loss_dict = compute_type_aware_loss(
+                    object_logits=object_logits,
+                    color_logits=color_logits,
+                    object_answer_id=object_answer_id,
+                    color_answer_id=color_answer_id,
+                )
+                loss = loss_dict["loss"]
 
             total_loss += loss.item() * batch_size
             total_samples += batch_size
@@ -190,9 +225,10 @@ def evaluate(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--processed-dir", type=Path, default=Path("data/processed"))
-    parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints/question_vqa"))
+    parser.add_argument("--output-dir", type=Path, default=Path("checkpoints"))
+    parser.add_argument("--run-name", type=str, default="question_vqa_run")
     parser.add_argument("--image-encoder", type=str, default="gapcnn_s", choices=["gapcnn_s", "mobilenet_v3_large"])
-    parser.add_argument("--image-size", type=int, default=128)
+    parser.add_argument("--image-size", type=int, default=128, choices=[128, 224])
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -200,27 +236,37 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--overfit-small", action="store_true", help="Run in a tiny overfit mode with 128 samples.")
     parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"])
+    parser.add_argument("--amp", action="store_true", help="Use mixed precision training (autocast) if running on CUDA.")
 
     # Prototype heads arguments
-    parser.add_argument("--head-type", type=str, default="classifier", choices=["classifier", "prototype"],
-                        help="VQA model head classification style.")
-    parser.add_argument("--answer-embed-dim", type=int, default=128, help="Size of projected prototype embeddings.")
-    parser.add_argument("--learn-logit-scale", action="store_true", help="Make logit scale learnable during training.")
-    parser.add_argument("--logit-scale-init", type=float, default=10.0, help="Initial scale value for cosine logits.")
-    parser.add_argument("--prototype-path", type=Path, default=Path("data/processed/answer_prototypes.pt"),
-                        help="Path to pre-generated answer_prototypes.pt")
+    parser.add_argument("--head-type", type=str, default="classifier", choices=["classifier", "prototype"])
+    parser.add_argument("--answer-embed-dim", type=int, default=128)
+    parser.add_argument("--learn-logit-scale", action="store_true")
+    parser.add_argument("--logit-scale-init", type=float, default=10.0)
+    parser.add_argument("--prototype-path", type=Path, default=Path("data/processed/answer_prototypes.pt"))
 
     args = parser.parse_args()
 
     set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Device configuration
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
+
+    use_amp = args.amp and (device.type == "cuda")
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp) if use_amp else None
 
     print("--- Question-Aware Model Training / Overfitting ---")
     print(f"Device: {device}")
+    print(f"AMP/Mixed Precision: {use_amp}")
     print(f"Image encoder: {args.image_encoder}")
     print(f"Image size: {args.image_size}")
     print(f"Overfit mode: {args.overfit_small}")
     print(f"Head type: {args.head_type}")
+    print(f"Run directory: {args.output_dir / args.run_name}")
 
     train_manifest = args.processed_dir / "cocoqa_train_resolved.jsonl"
     val_manifest = args.processed_dir / "cocoqa_val_resolved.jsonl"
@@ -316,8 +362,15 @@ def main() -> None:
     )
 
     # 6. Training Loop
-    args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    best_acc = 0.0
+    run_dir = args.output_dir / args.run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    best_ckpt_path = run_dir / "best_model.pt"
+    last_ckpt_path = run_dir / "last_model.pt"
+    metrics_json_path = run_dir / "metrics.json"
+
+    best_val_acc = 0.0
+    history = []
 
     print("\nStarting training loop...")
     for epoch in range(1, epochs + 1):
@@ -327,38 +380,59 @@ def main() -> None:
             optimizer=optimizer,
             device=device,
             epoch=epoch,
+            scaler=scaler,
+            use_amp=use_amp,
         )
 
         logit_scale_val = ""
         if args.head_type == "prototype":
             logit_scale_val = f" | Scale: {model.logit_scale.item():.4f}"
 
+        # Evaluation
+        val_metrics = None
         if val_loader:
-            val_metrics = evaluate(model, val_loader, device)
-            print(
-                f"Epoch {epoch:02d} | "
-                f"Train Loss: {train_metrics['loss']:.4f} | Train Acc: {train_metrics['accuracy']:.4f} | "
-                f"Val Loss: {val_metrics['loss']:.4f} | Val Acc: {val_metrics['accuracy']:.4f}{logit_scale_val}"
-            )
+            val_metrics = evaluate(model, val_loader, device, use_amp=use_amp)
+            val_acc = val_metrics["accuracy"]
+            
             # Save best checkpoint
-            if val_metrics["accuracy"] > best_acc:
-                best_acc = val_metrics["accuracy"]
-                torch.save(model.state_dict(), args.checkpoint_dir / "best_model.pt")
-        else:
-            # Overfit mode output
-            print(
-                f"Epoch {epoch:02d}/{epochs:02d} | "
-                f"Loss: {train_metrics['loss']:.5f} | "
-                f"Acc: {train_metrics['accuracy']:.4f} (Obj: {train_metrics['object_acc']:.4f}, Col: {train_metrics['color_acc']:.4f}){logit_scale_val}"
-            )
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                torch.save(model.state_dict(), best_ckpt_path)
 
-            # Assert convergence if we are near the end of overfit mode
-            if args.overfit_small and epoch == epochs and train_metrics["accuracy"] < 0.90:
-                print("WARNING: Model did not achieve high overfit accuracy (>90%).")
+        # Log history
+        metrics_row = {
+            "epoch": epoch,
+            "train_loss": train_metrics["loss"],
+            "train_accuracy": train_metrics["accuracy"],
+            "train_object_acc": train_metrics["object_acc"],
+            "train_color_acc": train_metrics["color_acc"],
+        }
+        if val_metrics:
+            metrics_row.update({
+                "val_loss": val_metrics["loss"],
+                "val_accuracy": val_metrics["accuracy"],
+                "val_object_acc": val_metrics["object_acc"],
+                "val_color_acc": val_metrics["color_acc"],
+                "best_val_accuracy": best_val_acc,
+            })
+        history.append(metrics_row)
+        
+        # Save metrics.json every epoch
+        with metrics_json_path.open("w", encoding="utf-8") as f:
+            json.dump(history, f, indent=2)
+
+        # Print Epoch Report
+        print(f"\n--- Epoch {epoch:02d}/{epochs:02d} ---")
+        print(f"  Train Loss: {train_metrics['loss']:.4f} | Acc: {train_metrics['accuracy']:.4f} (Obj: {train_metrics['object_acc']:.4f}, Col: {train_metrics['color_acc']:.4f})")
+        if val_metrics:
+            print(f"  Val   Loss: {val_metrics['loss']:.4f} | Acc: {val_metrics['accuracy']:.4f} (Obj: {val_metrics['object_acc']:.4f}, Col: {val_metrics['color_acc']:.4f})")
+            print(f"  Best Val Acc: {best_val_acc:.4f}{logit_scale_val}")
+        else:
+            print(f"  Overfit Mode{logit_scale_val}")
 
     # Save last checkpoint
-    torch.save(model.state_dict(), args.checkpoint_dir / "last_model.pt")
-    print(f"\nTraining completed. Saved final model checkpoint to {args.checkpoint_dir / 'last_model.pt'}")
+    torch.save(model.state_dict(), last_ckpt_path)
+    print(f"\nTraining completed. Saved final model checkpoints and metrics history to {run_dir}")
 
 
 if __name__ == "__main__":
