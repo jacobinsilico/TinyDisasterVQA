@@ -218,15 +218,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 # ADDED BY ME 
-# Images / datasets
-data/images/
-#data/coco-annotations/train/captions_train2014.json
-#data/coco-annotations/val/captions_val2014.json
-
-#data/coco-annotations/train/person_keypoints_train2014.json
-#data/coco-annotations/val/person_keypoints_val2014.json
-data/coco-qa
-data/coco-annotations
 
 # Checkpoints
 checkpoints/
@@ -234,14 +225,7 @@ checkpoints/
 *.pth
 *.ckpt
 
-# Generated previews/logs
-data/processed/*.png
-data/processed/*log*.txt
-data/processed/download_report.json
-data/processed/missing_images.jsonl
-
-/docs 
-/debug_samples
+dataset/images
 
 # Python
 __pycache__/
