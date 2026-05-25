@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Baseline training and overfitting script for the question-aware VQA model (QuestionVQAModel).
-Colab-Ready and fully compatible with mixed-precision (AMP) CUDA acceleration.
+Colab-Ready and fully compatible with mixed-precision (AMP) CUDA acceleration and teacher-student Knowledge Distillation.
 
 ================================================================================
 COLAB SANITY COMMAND LIST (WORKSPACE GUIDE)
@@ -37,6 +37,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +50,30 @@ from src.models.vqa_models import QuestionVQAModel, compute_type_aware_loss
 from src.utils import set_seed, count_parameters
 
 
+def compute_kd_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    mask: torch.Tensor,
+    temperature: float = 4.0,
+) -> torch.Tensor:
+    """
+    Computes KL divergence loss between softened student and teacher logits.
+    """
+    if mask.sum().item() == 0:
+        return torch.tensor(0.0, device=student_logits.device)
+        
+    s_masked = student_logits[mask] / temperature
+    t_masked = teacher_logits[mask] / temperature
+    
+    kl_loss_fn = nn.KLDivLoss(reduction="sum")
+    
+    log_probs = F.log_softmax(s_masked, dim=-1)
+    targets = F.softmax(t_masked, dim=-1)
+    
+    loss = kl_loss_fn(log_probs, targets) * (temperature ** 2)
+    return loss / s_masked.shape[0]
+
+
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -57,9 +82,17 @@ def train_one_epoch(
     epoch: int,
     scaler: torch.cuda.amp.GradScaler | None = None,
     use_amp: bool = False,
+    teacher: nn.Module | None = None,
+    kd_alpha: float = 0.5,
+    kd_temperature: float = 4.0,
 ) -> dict[str, float]:
     model.train()
+    if teacher is not None:
+        teacher.eval()
+
     total_loss = 0.0
+    total_hard_loss = 0.0
+    total_kd_loss = 0.0
     total_samples = 0
     total_correct = 0
 
@@ -79,19 +112,55 @@ def train_one_epoch(
 
         batch_size = images.shape[0]
 
+        # 1. Run Teacher Forward Pass (if distillation enabled)
+        teacher_obj_logits = None
+        teacher_col_logits = None
+        if teacher is not None:
+            teacher_images = batch["teacher_image"].to(device)
+            with torch.no_grad():
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    teacher_obj_logits, teacher_col_logits = teacher(
+                        teacher_images,
+                        question_ids,
+                        question_len,
+                    )
+
         optimizer.zero_grad()
         
-        # Mixed precision context
+        # 2. Run Student Forward Pass (mixed precision context)
         with torch.cuda.amp.autocast(enabled=use_amp):
             object_logits, color_logits = model(images, question_ids, question_len)
+            
+            # Hard supervised CrossEntropy loss
             loss_dict = compute_type_aware_loss(
                 object_logits=object_logits,
                 color_logits=color_logits,
                 object_answer_id=object_answer_id,
                 color_answer_id=color_answer_id,
             )
-            loss = loss_dict["loss"]
+            hard_loss = loss_dict["loss"]
 
+            # Compute softened KD loss
+            kd_loss = torch.tensor(0.0, device=device)
+            if teacher is not None:
+                obj_mask = (object_answer_id != -1)
+                col_mask = (color_answer_id != -1)
+
+                kd_obj_loss = compute_kd_loss(object_logits, teacher_obj_logits, obj_mask, kd_temperature)
+                kd_col_loss = compute_kd_loss(color_logits, teacher_col_logits, col_mask, kd_temperature)
+
+                num_obj = obj_mask.sum().item()
+                num_col = col_mask.sum().item()
+                total_valid = num_obj + num_col
+
+                if total_valid > 0:
+                    kd_loss = (kd_obj_loss * num_obj + kd_col_loss * num_col) / total_valid
+
+                loss = (1.0 - kd_alpha) * hard_loss + kd_alpha * kd_loss
+            else:
+                loss = hard_loss
+
+        # Backpropagation
         if use_amp and scaler is not None:
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -101,6 +170,8 @@ def train_one_epoch(
             optimizer.step()
 
         total_loss += loss.item() * batch_size
+        total_hard_loss += hard_loss.item() * batch_size
+        total_kd_loss += kd_loss.item() * batch_size
         total_samples += batch_size
 
         # Accumulate metrics
@@ -127,12 +198,16 @@ def train_one_epoch(
 
     elapsed = time.time() - start_time
     avg_loss = total_loss / max(total_samples, 1)
+    avg_hard_loss = total_hard_loss / max(total_samples, 1)
+    avg_kd_loss = total_kd_loss / max(total_samples, 1)
     total_acc = total_correct / max(total_samples, 1)
     object_acc = object_correct / max(num_object_samples, 1)
     color_acc = color_correct / max(num_color_samples, 1)
 
     return {
         "loss": avg_loss,
+        "hard_loss": avg_hard_loss,
+        "kd_loss": avg_kd_loss,
         "accuracy": total_acc,
         "object_acc": object_acc,
         "color_acc": color_acc,
@@ -246,6 +321,15 @@ def main() -> None:
     parser.add_argument("--logit-scale-init", type=float, default=10.0)
     parser.add_argument("--prototype-path", type=Path, default=Path("data/processed/answer_prototypes.pt"))
 
+    # Knowledge Distillation arguments
+    parser.add_argument("--distill", action="store_true", help="Enable teacher-student knowledge distillation.")
+    parser.add_argument("--teacher-checkpoint", type=Path, default=None, help="Path to trained teacher checkpoint.")
+    parser.add_argument("--teacher-image-encoder", type=str, default="mobilenet_v3_large", help="Teacher image encoder name.")
+    parser.add_argument("--teacher-image-size", type=int, default=224, help="Teacher input resolution.")
+    parser.add_argument("--teacher-head-type", type=str, default=None, help="Teacher head style (classifier or prototype). Defaults to matches student's.")
+    parser.add_argument("--kd-alpha", type=float, default=0.5, help="Distillation soft loss balance weight (0.0 to 1.0).")
+    parser.add_argument("--kd-temperature", type=float, default=4.0, help="Logits softening temperature.")
+
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -267,6 +351,14 @@ def main() -> None:
     print(f"Overfit mode: {args.overfit_small}")
     print(f"Head type: {args.head_type}")
     print(f"Run directory: {args.output_dir / args.run_name}")
+
+    if args.distill:
+        print("\n--- Distillation Configuration ---")
+        print(f"  Teacher checkpoint: {args.teacher_checkpoint}")
+        print(f"  Teacher encoder:    {args.teacher_image_encoder}")
+        print(f"  Teacher resolution: {args.teacher_image_size}")
+        print(f"  KD alpha:           {args.kd_alpha}")
+        print(f"  KD temperature:     {args.kd_temperature}")
 
     train_manifest = args.processed_dir / "cocoqa_train_resolved.jsonl"
     val_manifest = args.processed_dir / "cocoqa_val_resolved.jsonl"
@@ -290,6 +382,7 @@ def main() -> None:
         train=augment,
         repo_root=REPO_ROOT,
         limit=limit,
+        teacher_image_size=args.teacher_image_size if args.distill else None,
     )
 
     val_dataset = None
@@ -354,6 +447,52 @@ def main() -> None:
 
     print(f"Model parameters: {count_parameters(model):,}")
 
+    # 4.5 Instantiate and Load Teacher Model (if distillation enabled)
+    teacher_model = None
+    if args.distill:
+        if not args.teacher_checkpoint:
+            raise ValueError("--teacher-checkpoint is required when distillation is enabled.")
+        
+        teacher_head_type = args.teacher_head_type if args.teacher_head_type is not None else args.head_type
+        if teacher_head_type != args.head_type:
+            raise ValueError(
+                f"Mismatched head configurations: teacher is '{teacher_head_type}' but student is '{args.head_type}'. "
+                f"Distillation between different classification paradigms is not supported in this version."
+            )
+
+        print(f"Loading teacher model: encoder={args.teacher_image_encoder}, head_type={teacher_head_type}...")
+        teacher_model = QuestionVQAModel(
+            vocab_size=vocab.size,
+            num_object_classes=40,
+            num_color_classes=10,
+            image_encoder_name=args.teacher_image_encoder,
+            image_feature_dim=160 if args.teacher_image_encoder == "gapcnn_s" else 256,
+            question_embedding_dim=64,
+            question_feature_dim=128,
+            pad_id=vocab.pad_id,
+            hidden_dim=192,
+            dropout=0.0,
+            head_type=teacher_head_type,
+            answer_embed_dim=args.answer_embed_dim,
+        )
+
+        state_dict = torch.load(args.teacher_checkpoint, map_location="cpu")
+        if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
+            state_dict = state_dict["model_state_dict"]
+        teacher_model.load_state_dict(state_dict)
+
+        if teacher_head_type == "prototype":
+            if args.prototype_path.exists():
+                teacher_model.load_prototypes(args.prototype_path)
+            else:
+                raise FileNotFoundError(f"Prototypes file required for prototype teacher at {args.prototype_path}")
+
+        teacher_model = teacher_model.to(device)
+        teacher_model.eval()
+        for p in teacher_model.parameters():
+            p.requires_grad = False
+        print("Teacher model loaded and frozen successfully.")
+
     # 5. Optimizer
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -382,6 +521,9 @@ def main() -> None:
             epoch=epoch,
             scaler=scaler,
             use_amp=use_amp,
+            teacher=teacher_model,
+            kd_alpha=args.kd_alpha,
+            kd_temperature=args.kd_temperature,
         )
 
         logit_scale_val = ""
@@ -403,6 +545,8 @@ def main() -> None:
         metrics_row = {
             "epoch": epoch,
             "train_loss": train_metrics["loss"],
+            "train_hard_loss": train_metrics["hard_loss"],
+            "train_kd_loss": train_metrics["kd_loss"],
             "train_accuracy": train_metrics["accuracy"],
             "train_object_acc": train_metrics["object_acc"],
             "train_color_acc": train_metrics["color_acc"],
@@ -415,6 +559,12 @@ def main() -> None:
                 "val_color_acc": val_metrics["color_acc"],
                 "best_val_accuracy": best_val_acc,
             })
+        if args.distill:
+            metrics_row.update({
+                "kd_alpha": args.kd_alpha,
+                "kd_temperature": args.kd_temperature,
+                "teacher_checkpoint": str(args.teacher_checkpoint),
+            })
         history.append(metrics_row)
         
         # Save metrics.json every epoch
@@ -423,7 +573,11 @@ def main() -> None:
 
         # Print Epoch Report
         print(f"\n--- Epoch {epoch:02d}/{epochs:02d} ---")
-        print(f"  Train Loss: {train_metrics['loss']:.4f} | Acc: {train_metrics['accuracy']:.4f} (Obj: {train_metrics['object_acc']:.4f}, Col: {train_metrics['color_acc']:.4f})")
+        if args.distill:
+            print(f"  Train Total Loss: {train_metrics['loss']:.4f} | Hard Loss: {train_metrics['hard_loss']:.4f} | KD Loss: {train_metrics['kd_loss']:.4f}")
+        else:
+            print(f"  Train Loss: {train_metrics['loss']:.4f}")
+        print(f"  Train Acc: {train_metrics['accuracy']:.4f} (Obj: {train_metrics['object_acc']:.4f}, Col: {train_metrics['color_acc']:.4f})")
         if val_metrics:
             print(f"  Val   Loss: {val_metrics['loss']:.4f} | Acc: {val_metrics['accuracy']:.4f} (Obj: {val_metrics['object_acc']:.4f}, Col: {val_metrics['color_acc']:.4f})")
             print(f"  Best Val Acc: {best_val_acc:.4f}{logit_scale_val}")
