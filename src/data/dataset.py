@@ -24,8 +24,8 @@ ID_TO_TYPE = {
 class CocoQADataset(Dataset):
     def __init__(
         self,
-        manifest_path: str | Path,
-        question_vocab_path: str | Path,
+        manifest_path: str | Path | None = None,
+        question_vocab_path: str | Path | None = None,
         image_transform: Optional[Callable] = None,
         image_size: int = 128,
         train: bool = False,
@@ -56,6 +56,11 @@ class CocoQADataset(Dataset):
           answer_vocab_path:
             Path to answer_vocab.json. If None, defaults to manifest parent.
         """
+        if manifest_path is None:
+            manifest_path = "data/processed/cocoqa_train_resolved.jsonl"
+        if question_vocab_path is None:
+            question_vocab_path = "data/processed/question_vocab.json"
+
         self.manifest_path = Path(manifest_path)
         self.question_vocab_path = Path(question_vocab_path)
         self.repo_root = Path(repo_root) if repo_root is not None else Path.cwd()
@@ -64,6 +69,8 @@ class CocoQADataset(Dataset):
 
         if answer_vocab_path is None:
             answer_vocab_path = self.manifest_path.parent / "answer_vocab.json"
+            if not answer_vocab_path.exists():
+                answer_vocab_path = Path("data/processed/answer_vocab.json")
         self.answer_vocab_path = Path(answer_vocab_path)
 
         self.samples = read_jsonl(self.manifest_path)
@@ -176,6 +183,16 @@ class CocoQADataset(Dataset):
         type_id = TYPE_TO_ID[qtype]
         head_answer_id = self.head_answer_to_id[qtype][sample["answer"]]
 
+        if qtype == "object":
+            object_answer_id = head_answer_id
+            color_answer_id = -1
+        elif qtype == "color":
+            object_answer_id = -1
+            color_answer_id = head_answer_id
+        else:
+            object_answer_id = -1
+            color_answer_id = -1
+
         metadata = {
             "sample_id": str(sample.get("sample_id", "")),
             "image_id": int(sample["image_id"]),
@@ -192,9 +209,15 @@ class CocoQADataset(Dataset):
 
         out = {
             "image": image,
+            "question": str(sample["question"]),
             "question_ids": torch.tensor(question_ids, dtype=torch.long),
             "question_len": torch.tensor(question_len, dtype=torch.long),
+            "type": qtype,
+            "answer": str(sample["answer"]),
             "answer_id": torch.tensor(answer_id, dtype=torch.long),
+            "object_answer_id": torch.tensor(object_answer_id, dtype=torch.long),
+            "color_answer_id": torch.tensor(color_answer_id, dtype=torch.long),
+            "image_id": torch.tensor(int(sample["image_id"]), dtype=torch.long),
             "type_id": torch.tensor(type_id, dtype=torch.long),
             "type_onehot": self._type_onehot(type_id),
             "head_answer_id": torch.tensor(head_answer_id, dtype=torch.long),
