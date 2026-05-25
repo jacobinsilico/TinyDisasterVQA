@@ -34,6 +34,7 @@ class CocoQADataset(Dataset):
         answer_vocab_path: str | Path | None = None,
         teacher_image_transform: Optional[Callable] = None,
         teacher_image_size: int | None = None,
+        padding_fill_rgb: tuple[int, int, int] = (123, 116, 103),
     ) -> None:
         """
         Args:
@@ -58,6 +59,8 @@ class CocoQADataset(Dataset):
         self.manifest_path = Path(manifest_path)
         self.question_vocab_path = Path(question_vocab_path)
         self.repo_root = Path(repo_root) if repo_root is not None else Path.cwd()
+        self.image_size = image_size
+        self.teacher_image_size = teacher_image_size
 
         if answer_vocab_path is None:
             answer_vocab_path = self.manifest_path.parent / "answer_vocab.json"
@@ -93,6 +96,7 @@ class CocoQADataset(Dataset):
             self.image_transform = default_image_transform(
                 image_size=image_size,
                 train=train,
+                padding_fill_rgb=padding_fill_rgb,
             )
 
         self.teacher_image_transform = teacher_image_transform
@@ -102,6 +106,7 @@ class CocoQADataset(Dataset):
             self.teacher_image_transform = default_image_transform(
                 image_size=teacher_image_size,
                 train=False,
+                padding_fill_rgb=padding_fill_rgb,
             )
 
         self._validate_samples()
@@ -198,6 +203,15 @@ class CocoQADataset(Dataset):
 
         if teacher_image is not None:
             out["teacher_image"] = teacher_image
+
+        # Smoke test shape assertions
+        if image is not None:
+            assert image.shape == (3, self.image_size, self.image_size), \
+                f"Student image shape mismatch: expected {(3, self.image_size, self.image_size)}, got {image.shape}"
+
+        if teacher_image is not None:
+            assert teacher_image.shape == (3, self.teacher_image_size, self.teacher_image_size), \
+                f"Teacher image shape mismatch: expected {(3, self.teacher_image_size, self.teacher_image_size)}, got {teacher_image.shape}"
 
         return out
 
