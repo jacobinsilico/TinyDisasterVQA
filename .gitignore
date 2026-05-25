@@ -227,6 +227,8 @@ checkpoints/
 
 dataset/images
 outputs 
+runs/ 
+
 
 # Python
 __pycache__/
