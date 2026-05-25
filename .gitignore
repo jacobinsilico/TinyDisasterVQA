@@ -226,6 +226,7 @@ checkpoints/
 *.ckpt
 
 dataset/images
+outputs 
 
 # Python
 __pycache__/
