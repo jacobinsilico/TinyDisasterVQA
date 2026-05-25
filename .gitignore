@@ -236,6 +236,7 @@ data/processed/download_report.json
 data/processed/missing_images.jsonl
 
 /docs 
+/debug_samples
 
 # Python
 __pycache__/
