@@ -330,6 +330,26 @@ def main() -> None:
     parser.add_argument("--kd-alpha", type=float, default=0.5, help="Distillation soft loss balance weight (0.0 to 1.0).")
     parser.add_argument("--kd-temperature", type=float, default=4.0, help="Logits softening temperature.")
 
+    # Early stopping arguments
+    parser.add_argument(
+        "--early-stopping",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable validation-based early stopping. Use --no-early-stopping to disable.",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=6,
+        help="Stop after this many validation epochs without improvement.",
+    )
+    parser.add_argument(
+        "--min-delta",
+        type=float,
+        default=1e-4,
+        help="Minimum validation accuracy improvement required to reset early stopping patience.",
+    )
+
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -351,6 +371,7 @@ def main() -> None:
     print(f"Overfit mode: {args.overfit_small}")
     print(f"Head type: {args.head_type}")
     print(f"Run directory: {args.output_dir / args.run_name}")
+    print(f"Early stopping: {args.early_stopping} (patience={args.patience}, min_delta={args.min_delta})")
 
     if args.distill:
         print("\n--- Distillation Configuration ---")
@@ -509,6 +530,7 @@ def main() -> None:
     metrics_json_path = run_dir / "metrics.json"
 
     best_val_acc = 0.0
+    epochs_without_improvement = 0
     history = []
 
     print("\nStarting training loop...")
@@ -532,14 +554,19 @@ def main() -> None:
 
         # Evaluation
         val_metrics = None
+        is_best = False
         if val_loader:
             val_metrics = evaluate(model, val_loader, device, use_amp=use_amp)
             val_acc = val_metrics["accuracy"]
-            
-            # Save best checkpoint
-            if val_acc > best_val_acc:
+
+            # Save best checkpoint and update early stopping state.
+            if val_acc > best_val_acc + args.min_delta:
                 best_val_acc = val_acc
+                epochs_without_improvement = 0
+                is_best = True
                 torch.save(model.state_dict(), best_ckpt_path)
+            else:
+                epochs_without_improvement += 1
 
         # Log history
         metrics_row = {
@@ -558,6 +585,10 @@ def main() -> None:
                 "val_object_acc": val_metrics["object_acc"],
                 "val_color_acc": val_metrics["color_acc"],
                 "best_val_accuracy": best_val_acc,
+                "is_best": is_best,
+                "epochs_without_improvement": epochs_without_improvement,
+                "early_stopping_patience": args.patience,
+                "early_stopping_min_delta": args.min_delta,
             })
         if args.distill:
             metrics_row.update({
@@ -572,7 +603,8 @@ def main() -> None:
             json.dump(history, f, indent=2)
 
         # Print Epoch Report
-        print(f"\n--- Epoch {epoch:02d}/{epochs:02d} ---")
+        best_tag = " BEST" if is_best else ""
+        print(f"\n--- Epoch {epoch:02d}/{epochs:02d}{best_tag} ---")
         if args.distill:
             print(f"  Train Total Loss: {train_metrics['loss']:.4f} | Hard Loss: {train_metrics['hard_loss']:.4f} | KD Loss: {train_metrics['kd_loss']:.4f}")
         else:
@@ -581,6 +613,14 @@ def main() -> None:
         if val_metrics:
             print(f"  Val   Loss: {val_metrics['loss']:.4f} | Acc: {val_metrics['accuracy']:.4f} (Obj: {val_metrics['object_acc']:.4f}, Col: {val_metrics['color_acc']:.4f})")
             print(f"  Best Val Acc: {best_val_acc:.4f}{logit_scale_val}")
+            if args.early_stopping:
+                print(f"  Early stopping counter: {epochs_without_improvement}/{args.patience}")
+                if epochs_without_improvement >= args.patience:
+                    print(
+                        f"\nEarly stopping triggered after epoch {epoch}. "
+                        f"Best Val Acc: {best_val_acc:.4f}"
+                    )
+                    break
         else:
             print(f"  Overfit Mode{logit_scale_val}")
 
