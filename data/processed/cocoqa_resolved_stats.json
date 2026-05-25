@@ -1,50 +1,50 @@
 {
   "train": {
-    "num_samples": 28288,
-    "num_unique_images": 22229,
-    "num_unique_answers": 62,
+    "num_samples": 24629,
+    "num_unique_images": 19574,
+    "num_unique_answers": 50,
     "type_counts": {
-      "object": 23288,
+      "object": 19629,
       "color": 5000
     },
     "coco_split_counts_by_qa_pairs": {
-      "train2014": 28288
+      "train2014": 24629
     }
   },
   "val": {
-    "num_samples": 9584,
-    "num_unique_images": 6980,
-    "num_unique_answers": 62,
+    "num_samples": 8630,
+    "num_unique_images": 6333,
+    "num_unique_answers": 50,
     "type_counts": {
-      "object": 7627,
-      "color": 1957
+      "object": 6690,
+      "color": 1940
     },
     "coco_split_counts_by_qa_pairs": {
-      "val2014": 9584
+      "val2014": 8630
     }
   },
   "test": {
-    "num_samples": 5916,
-    "num_unique_images": 4839,
-    "num_unique_answers": 62,
+    "num_samples": 4986,
+    "num_unique_images": 4125,
+    "num_unique_answers": 50,
     "type_counts": {
-      "object": 4916,
+      "object": 3986,
       "color": 1000
     },
     "coco_split_counts_by_qa_pairs": {
-      "val2014": 5916
+      "val2014": 4986
     }
   },
   "required_images": {
-    "num_unique_images_total": 34048,
+    "num_unique_images_total": 30032,
     "coco_split_counts_by_unique_images": {
-      "train2014": 22229,
-      "val2014": 11819
+      "train2014": 19574,
+      "val2014": 10458
     },
     "used_by_splits_counts": {
-      "train": 22229,
-      "val": 6980,
-      "test": 4839
+      "train": 19574,
+      "test": 4125,
+      "val": 6333
     }
   },
   "missing": {

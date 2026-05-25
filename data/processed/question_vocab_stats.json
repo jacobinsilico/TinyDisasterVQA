@@ -1,14 +1,14 @@
 {
-  "num_train_questions": 28288,
+  "num_train_questions": 24629,
   "vocab_size": 2000,
   "max_length": 24,
-  "num_unique_tokens_before_pruning": 6313,
-  "num_tokens_total": 239178,
-  "token_coverage": 0.9702021088896136,
+  "num_unique_tokens_before_pruning": 5819,
+  "num_tokens_total": 207225,
+  "token_coverage": 0.9720062733743515,
   "length_stats": {
     "min": 3,
     "max": 45,
-    "mean": 8.45510463800905,
+    "mean": 8.413861707742905,
     "p50": 8,
     "p90": 11,
     "p95": 13,
@@ -16,204 +16,204 @@
   },
   "top_50_tokens": [
     [
-      "what",
-      28299
+      "the",
+      24690
     ],
     [
-      "the",
-      27224
+      "what",
+      24637
     ],
     [
       "is",
-      13544
+      12156
     ],
     [
       "a",
-      10345
+      8889
     ],
     [
       "of",
-      9505
+      8741
     ],
     [
       "on",
-      6492
+      5758
     ],
     [
       "in",
-      6184
+      5471
     ],
     [
       "color",
-      5021
+      5018
     ],
     [
       "with",
-      4794
+      3703
     ],
     [
       "and",
-      4205
+      3137
     ],
     [
       "are",
-      3347
+      3068
     ],
     [
       "to",
-      2943
-    ],
-    [
-      "man",
-      1807
+      2564
     ],
     [
       "next",
-      1759
+      1565
     ],
     [
       "sitting",
-      1607
+      1462
+    ],
+    [
+      "man",
+      1364
     ],
     [
       "parked",
-      1304
+      1289
     ],
     [
       "at",
-      1236
-    ],
-    [
-      "holding",
-      1163
-    ],
-    [
-      "does",
-      1116
+      1086
     ],
     [
       "down",
-      1042
+      944
     ],
     [
-      "filled",
-      1033
+      "holding",
+      943
     ],
     [
-      "an",
-      970
-    ],
-    [
-      "by",
-      936
+      "does",
+      888
     ],
     [
       "sits",
-      929
+      842
     ],
     [
-      "up",
-      883
+      "by",
+      827
     ],
     [
-      "table",
-      864
-    ],
-    [
-      "street",
-      840
-    ],
-    [
-      "near",
-      839
-    ],
-    [
-      "woman",
-      832
-    ],
-    [
-      "riding",
-      825
-    ],
-    [
-      "standing",
+      "an",
       814
     ],
     [
-      "field",
-      812
+      "street",
+      784
     ],
     [
-      "two",
-      812
+      "near",
+      779
+    ],
+    [
+      "riding",
+      763
+    ],
+    [
+      "field",
+      762
     ],
     [
       "grass",
-      802
+      755
     ],
     [
-      "white",
-      781
+      "up",
+      744
     ],
     [
-      "people",
-      781
+      "standing",
+      741
+    ],
+    [
+      "table",
+      727
     ],
     [
       "covered",
-      778
+      683
+    ],
+    [
+      "woman",
+      672
     ],
     [
       "top",
-      768
+      650
     ],
     [
-      "it",
-      674
+      "filled",
+      645
+    ],
+    [
+      "people",
+      634
+    ],
+    [
+      "white",
+      625
     ],
     [
       "side",
-      668
+      622
+    ],
+    [
+      "two",
+      612
     ],
     [
       "water",
-      615
+      558
     ],
     [
       "front",
-      614
+      556
+    ],
+    [
+      "it",
+      555
     ],
     [
       "some",
-      602
+      530
     ],
     [
       "other",
-      585
-    ],
-    [
-      "building",
-      562
+      498
     ],
     [
       "plate",
-      535
+      492
     ],
     [
       "snow",
-      528
+      482
     ],
     [
-      "person",
-      490
-    ],
-    [
-      "did",
-      467
+      "building",
+      470
     ],
     [
       "flying",
-      465
+      454
+    ],
+    [
+      "flowers",
+      429
+    ],
+    [
+      "road",
+      428
     ]
   ]
 }
