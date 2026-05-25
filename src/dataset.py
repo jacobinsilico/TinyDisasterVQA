@@ -118,6 +118,8 @@ class CocoQADataset(Dataset):
         repo_root: str | Path | None = None,
         limit: int = 0,
         answer_vocab_path: str | Path | None = None,
+        teacher_image_transform: Optional[Callable] = None,
+        teacher_image_size: int | None = None,
     ) -> None:
         """
         Args:
@@ -179,6 +181,15 @@ class CocoQADataset(Dataset):
                 train=train,
             )
 
+        self.teacher_image_transform = teacher_image_transform
+
+        if self.teacher_image_transform is None and teacher_image_size is not None:
+            # Teacher image should be deterministic, even during student training.
+            self.teacher_image_transform = default_image_transform(
+                image_size=teacher_image_size,
+                train=False,
+            )
+
         self._validate_samples()
 
     def _validate_samples(self) -> None:
@@ -227,8 +238,13 @@ class CocoQADataset(Dataset):
         if not image_path.exists():
             raise FileNotFoundError(f"Missing image: {image_path}")
 
-        image = Image.open(image_path).convert("RGB")
-        image = self.image_transform(image)
+        pil_image = Image.open(image_path).convert("RGB")
+
+        image = self.image_transform(pil_image)
+
+        teacher_image = None
+        if self.teacher_image_transform is not None:
+            teacher_image = self.teacher_image_transform(pil_image)
 
         question_ids, question_len = self.question_vocab.encode(sample["question"])
 
@@ -255,7 +271,7 @@ class CocoQADataset(Dataset):
         else:
             metadata["answer_original"] = ""
 
-        return {
+        out = {
             "image": image,
             "question_ids": torch.tensor(question_ids, dtype=torch.long),
             "question_len": torch.tensor(question_len, dtype=torch.long),
@@ -265,6 +281,11 @@ class CocoQADataset(Dataset):
             "head_answer_id": torch.tensor(head_answer_id, dtype=torch.long),
             "metadata": metadata,
         }
+
+        if teacher_image is not None:
+            out["teacher_image"] = teacher_image
+
+        return out
 
 
 def build_cocoqa_datasets(

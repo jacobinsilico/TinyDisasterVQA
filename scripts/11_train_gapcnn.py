@@ -145,7 +145,7 @@ def make_json_serializable(obj: Any) -> Any:
 
 
 def move_batch_to_device(batch: dict, device: torch.device) -> dict:
-    return {
+    out = {
         "images": batch["image"].to(device, non_blocking=True),
         "question_ids": batch["question_ids"].to(device, non_blocking=True),
         "question_len": batch["question_len"].to(device, non_blocking=True),
@@ -153,6 +153,13 @@ def move_batch_to_device(batch: dict, device: torch.device) -> dict:
         "type_id": batch["type_id"].to(device, non_blocking=True),
         "type_onehot": batch["type_onehot"].to(device, non_blocking=True),
     }
+
+    if "teacher_image" in batch:
+        out["teacher_images"] = batch["teacher_image"].to(device, non_blocking=True)
+    else:
+        out["teacher_images"] = out["images"]
+
+    return out
 
 
 def build_teacher_model(
@@ -313,7 +320,7 @@ def train_one_epoch(
             if teacher is not None:
                 with torch.amp.autocast("cuda", enabled=use_amp):
                     teacher_logits = teacher(
-                        images=images,
+                        images=batch_dev["teacher_images"],
                         question_ids=question_ids,
                         question_len=question_len,
                         type_id=type_id,
@@ -554,6 +561,13 @@ def main() -> None:
         help="KD softmax temperature.",
     )
 
+    parser.add_argument(
+        "--teacher-image-size",
+        type=int,
+        default=0,
+        help="If >0 and teacher is used, provide teacher_image at this size.",
+    )
+
     args = parser.parse_args()
 
     if args.kd_alpha < 0.0 or args.kd_alpha > 1.0:
@@ -594,6 +608,8 @@ def main() -> None:
     print()
     print("Building datasets...")
 
+    teacher_image_size = args.teacher_image_size if args.teacher_image_size > 0 else None
+
     train_dataset = CocoQADataset(
         manifest_path=train_manifest,
         question_vocab_path=question_vocab_path,
@@ -602,6 +618,7 @@ def main() -> None:
         train=(not args.no_augment),
         repo_root=REPO_ROOT,
         limit=args.train_limit,
+        teacher_image_size=teacher_image_size,
     )
 
     val_dataset = CocoQADataset(
@@ -612,6 +629,7 @@ def main() -> None:
         train=False,
         repo_root=REPO_ROOT,
         limit=args.val_limit,
+        teacher_image_size=teacher_image_size,
     )
 
     print(f"Train samples: {len(train_dataset)}")
