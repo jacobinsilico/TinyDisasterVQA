@@ -13,11 +13,11 @@ Works with:
 Example:
 
 python scripts/10_evaluate.py \
-  --checkpoint /content/drive/MyDrive/edge-vlm-gap9-runs/mobilenet_v2_multihead_128/best.pt \
+  --checkpoint checkpoints/baseline/best.pt \
   --split test \
   --batch-size 128 \
   --num-workers 2 \
-  --out-dir /content/drive/MyDrive/edge-vlm-gap9-runs/mobilenet_v2_multihead_128/eval \
+  --out-dir eval/baseline \
   --save-predictions
 """
 
@@ -26,7 +26,6 @@ import csv
 import json
 import sys
 import time
-from collections import Counter, defaultdict
 from pathlib import Path
 
 import torch
@@ -37,237 +36,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.dataset import CocoQADataset, ID_TO_TYPE
-from src.metrics import AccuracyTracker, AverageMeter, format_metrics
-from src.model import build_baseline_vqa_model, count_parameters
-from src.text import QuestionVocab
-
-
-def read_jsonl(path: Path) -> list[dict]:
-    if not path.exists():
-        raise FileNotFoundError(f"Missing JSONL file: {path}")
-
-    samples = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                samples.append(json.loads(line))
-
-    return samples
-
-
-def load_answer_vocab(path: Path) -> dict[int, str]:
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    return {int(k): v for k, v in data["id_to_answer"].items()}
-
-
-def build_answer_ids_by_type(processed_dir: Path) -> dict[str, list[int]]:
-    """
-    Fallback for old checkpoints or manual evaluation.
-
-    Builds valid global answer IDs for object/color/number from the resolved
-    manifests. This is only used to reconstruct separate-head models.
-    """
-    paths = [
-        processed_dir / "cocoqa_train_resolved.jsonl",
-        processed_dir / "cocoqa_val_resolved.jsonl",
-        processed_dir / "cocoqa_test_resolved.jsonl",
-    ]
-
-    answer_ids_by_type = {
-        "object": set(),
-        "color": set(),
-        "number": set(),
-    }
-
-    for path in paths:
-        if not path.exists():
-            continue
-
-        for sample in read_jsonl(path):
-            qtype = sample["type"]
-            if qtype in answer_ids_by_type:
-                answer_ids_by_type[qtype].add(int(sample["answer_id"]))
-
-    out = {
-        qtype: sorted(ids)
-        for qtype, ids in answer_ids_by_type.items()
-    }
-
-    for qtype, ids in out.items():
-        if not ids:
-            raise ValueError(f"No answer IDs found for question type: {qtype}")
-
-    return out
-
-
-def move_batch_to_device(batch: dict, device: torch.device) -> tuple:
-    images = batch["image"].to(device, non_blocking=True)
-    question_ids = batch["question_ids"].to(device, non_blocking=True)
-    question_len = batch["question_len"].to(device, non_blocking=True)
-    answer_id = batch["answer_id"].to(device, non_blocking=True)
-    type_id = batch["type_id"].to(device, non_blocking=True)
-
-    return images, question_ids, question_len, answer_id, type_id
-
-
-def infer_model_settings_from_checkpoint(
-    checkpoint: dict,
-    processed_dir: Path,
-    cli_model_name: str | None,
-    cli_head_type: str | None,
-    cli_freeze_image_encoder: bool,
-    cli_use_pretrained_init: bool,
-) -> dict:
-    """
-    Reconstruct model settings.
-
-    For evaluation, pretrained initialization is usually not needed because
-    checkpoint weights are loaded. Keeping pretrained=False avoids unnecessary
-    downloads.
-    """
-    config = checkpoint.get("config", {})
-
-    model_name = cli_model_name or config.get("model_name", "cnn")
-    head_type = cli_head_type or config.get("head_type", "shared")
-
-    freeze_image_encoder = cli_freeze_image_encoder or bool(
-        config.get("freeze_image_encoder", False)
-    )
-
-    answer_ids_by_type = config.get("answer_ids_by_type")
-
-    if answer_ids_by_type is None:
-        answer_ids_by_type = build_answer_ids_by_type(processed_dir)
-
-    # Make sure keys and values are normalized.
-    answer_ids_by_type = {
-        "object": [int(x) for x in answer_ids_by_type["object"]],
-        "color": [int(x) for x in answer_ids_by_type["color"]],
-        "number": [int(x) for x in answer_ids_by_type["number"]],
-    }
-
-    return {
-        "model_name": model_name,
-        "head_type": head_type,
-        "pretrained": bool(cli_use_pretrained_init),
-        "freeze_image_encoder": freeze_image_encoder,
-        "answer_ids_by_type": answer_ids_by_type,
-        "checkpoint_config": config,
-    }
-
-
-@torch.no_grad()
-def evaluate(
-    model: nn.Module,
-    loader: DataLoader,
-    criterion: nn.Module,
-    device: torch.device,
-    id_to_answer: dict[int, str],
-    use_amp: bool,
-) -> tuple[dict, list[dict]]:
-    model.eval()
-
-    loss_meter = AverageMeter()
-    acc_tracker = AccuracyTracker()
-
-    pred_rows = []
-    confusion_by_answer = defaultdict(Counter)
-
-    start_time = time.time()
-
-    for batch in loader:
-        images, question_ids, question_len, answer_id, type_id = move_batch_to_device(
-            batch, device
-        )
-
-        with torch.amp.autocast("cuda", enabled=use_amp):
-            logits = model(
-                images=images,
-                question_ids=question_ids,
-                question_len=question_len,
-                type_id=type_id,
-            )
-            loss = criterion(logits, answer_id)
-
-        preds = logits.argmax(dim=1)
-
-        batch_size = images.shape[0]
-        loss_meter.update(loss.item(), n=batch_size)
-        acc_tracker.update(logits, answer_id, type_id)
-
-        for i in range(batch_size):
-            target_id = int(answer_id[i].cpu())
-            pred_id = int(preds[i].cpu())
-            t_id = int(type_id[i].cpu())
-
-            target_answer = id_to_answer[target_id]
-            pred_answer = id_to_answer[pred_id]
-            qtype = ID_TO_TYPE[t_id]
-
-            correct = int(target_answer == pred_answer)
-
-            confusion_by_answer[target_answer][pred_answer] += 1
-
-            pred_rows.append(
-                {
-                    "sample_id": batch["metadata"]["sample_id"][i],
-                    "image_id": batch["metadata"]["image_id"][i],
-                    "question": batch["metadata"]["question"][i],
-                    "type": qtype,
-                    "target_answer": target_answer,
-                    "pred_answer": pred_answer,
-                    "correct": correct,
-                    "image_path": batch["metadata"]["image_path"][i],
-                }
-            )
-
-    metrics = acc_tracker.compute()
-    metrics["loss"] = loss_meter.avg
-    metrics["time_sec"] = time.time() - start_time
-
-    answer_total = Counter()
-    answer_correct = Counter()
-
-    for row in pred_rows:
-        ans = row["target_answer"]
-        answer_total[ans] += 1
-        answer_correct[ans] += int(row["correct"])
-
-    per_answer_accuracy = {}
-    for ans in sorted(answer_total.keys()):
-        total = answer_total[ans]
-        correct = answer_correct[ans]
-        per_answer_accuracy[ans] = {
-            "correct": correct,
-            "total": total,
-            "accuracy": correct / total if total > 0 else 0.0,
-        }
-
-    metrics["per_answer_accuracy"] = per_answer_accuracy
-
-    top_confusions = []
-    for target_answer, pred_counter in confusion_by_answer.items():
-        for pred_answer, count in pred_counter.most_common():
-            if pred_answer != target_answer:
-                top_confusions.append(
-                    {
-                        "target": target_answer,
-                        "pred": pred_answer,
-                        "count": count,
-                    }
-                )
-
-    metrics["top_confusions"] = sorted(
-        top_confusions,
-        key=lambda x: x["count"],
-        reverse=True,
-    )[:50]
-
-    return metrics, pred_rows
+from src.data import (
+    CocoQADataset,
+    QuestionVocab,
+    load_answer_vocab,
+)
+from src.utils import count_parameters, format_metrics
+from src.models import build_baseline_vqa_model
+from src.evaluation import infer_model_settings_from_checkpoint, run_full_evaluation
 
 
 def save_json(path: Path, data: dict) -> None:
@@ -450,18 +226,23 @@ def main() -> None:
     print("Answer IDs by type:")
     print(f"  object: {len(model_settings['answer_ids_by_type']['object'])}")
     print(f"  color:  {len(model_settings['answer_ids_by_type']['color'])}")
-    print(f"  number: {len(model_settings['answer_ids_by_type']['number'])}")
+    print(f"  number: {len(model_settings['answer_ids_by_type'].get('number', []))}")
 
     manifest_path = args.processed_dir / f"cocoqa_{args.split}_resolved.jsonl"
     question_vocab_path = args.processed_dir / "question_vocab.json"
     answer_vocab_path = args.processed_dir / "answer_vocab.json"
 
     question_vocab = QuestionVocab.load(question_vocab_path)
-    id_to_answer = load_answer_vocab(answer_vocab_path)
+    answer_vocab = load_answer_vocab(answer_vocab_path)
+    if isinstance(answer_vocab, dict) and "id_to_answer" in answer_vocab:
+        id_to_answer = {int(k): v for k, v in answer_vocab["id_to_answer"].items()}
+    else:
+        id_to_answer = {int(k): v for k, v in answer_vocab.items()}
 
     dataset = CocoQADataset(
         manifest_path=manifest_path,
         question_vocab_path=question_vocab_path,
+        answer_vocab_path=answer_vocab_path,
         image_size=args.image_size,
         train=False,
         repo_root=REPO_ROOT,
@@ -487,7 +268,7 @@ def main() -> None:
         head_type=model_settings["head_type"],
         object_answer_ids=model_settings["answer_ids_by_type"]["object"],
         color_answer_ids=model_settings["answer_ids_by_type"]["color"],
-        number_answer_ids=model_settings["answer_ids_by_type"]["number"],
+        number_answer_ids=model_settings["answer_ids_by_type"].get("number"),
     ).to(device)
 
     print(f"Dataset samples: {len(dataset)}")
@@ -503,7 +284,7 @@ def main() -> None:
 
     criterion = nn.CrossEntropyLoss()
 
-    metrics, pred_rows = evaluate(
+    metrics, pred_rows = run_full_evaluation(
         model=model,
         loader=loader,
         criterion=criterion,

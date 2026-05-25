@@ -31,475 +31,42 @@ Important:
 """
 
 import argparse
-import csv
 import json
-import random
 import sys
 import time
 from pathlib import Path
-from typing import Any
 
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.dataset import CocoQADataset
-from src.metrics import (
-    AccuracyTracker,
-    AverageMeter,
-    ConfusionTracker,
-    format_metrics,
-    print_top_confusions,
+from src.data import (
+    CocoQADataset,
+    QuestionVocab,
+    load_answer_vocab,
+    build_answer_ids_from_vocab,
+    id_to_answer_from_vocab,
 )
-from src.model import (
-    build_baseline_vqa_model,
-    build_gapcnn_s_vqa_model,
+from src.utils import (
+    set_seed,
+    append_log_csv,
+    format_metrics,
     count_parameters,
     estimate_int8_weight_size_bytes,
 )
-from src.text import QuestionVocab
-
-
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-
-def read_json(path: Path) -> dict:
-    if not path.exists():
-        raise FileNotFoundError(f"Missing JSON file: {path}")
-
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def load_answer_vocab(path: Path) -> dict:
-    data = read_json(path)
-
-    required_keys = ["answer_to_id", "id_to_answer", "object_answers", "color_answers"]
-    for key in required_keys:
-        if key not in data:
-            raise KeyError(f"answer_vocab.json missing required key: {key}")
-
-    return data
-
-
-def build_answer_ids_from_vocab(answer_vocab: dict) -> dict[str, list[int]]:
-    answer_to_id = answer_vocab["answer_to_id"]
-
-    object_answer_ids = [
-        int(answer_to_id[ans])
-        for ans in answer_vocab["object_answers"]
-        if ans in answer_to_id
-    ]
-
-    color_answer_ids = [
-        int(answer_to_id[ans])
-        for ans in answer_vocab["color_answers"]
-        if ans in answer_to_id
-    ]
-
-    if not object_answer_ids:
-        raise ValueError("No object answer IDs found in answer_vocab.json.")
-    if not color_answer_ids:
-        raise ValueError("No color answer IDs found in answer_vocab.json.")
-
-    return {
-        "object": sorted(object_answer_ids),
-        "color": sorted(color_answer_ids),
-    }
-
-
-def id_to_answer_from_vocab(answer_vocab: dict) -> dict[int, str]:
-    return {
-        int(k): v
-        for k, v in answer_vocab["id_to_answer"].items()
-    }
-
-
-def make_json_serializable(obj: Any) -> Any:
-    if isinstance(obj, Path):
-        return str(obj)
-
-    if isinstance(obj, dict):
-        return {k: make_json_serializable(v) for k, v in obj.items()}
-
-    if isinstance(obj, (list, tuple, set)):
-        return [make_json_serializable(v) for v in obj]
-
-    if isinstance(obj, np.integer):
-        return int(obj)
-
-    if isinstance(obj, np.floating):
-        return float(obj)
-
-    return obj
-
-
-def move_batch_to_device(batch: dict, device: torch.device) -> dict:
-    out = {
-        "images": batch["image"].to(device, non_blocking=True),
-        "question_ids": batch["question_ids"].to(device, non_blocking=True),
-        "question_len": batch["question_len"].to(device, non_blocking=True),
-        "answer_id": batch["answer_id"].to(device, non_blocking=True),
-        "type_id": batch["type_id"].to(device, non_blocking=True),
-        "type_onehot": batch["type_onehot"].to(device, non_blocking=True),
-    }
-
-    if "teacher_image" in batch:
-        out["teacher_images"] = batch["teacher_image"].to(device, non_blocking=True)
-    else:
-        out["teacher_images"] = out["images"]
-
-    return out
-
-
-def build_teacher_model(
-    teacher_checkpoint_path: Path,
-    question_vocab: QuestionVocab,
-    num_answers: int,
-    answer_ids_by_type: dict[str, list[int]],
-    device: torch.device,
-) -> nn.Module:
-    if not teacher_checkpoint_path.exists():
-        raise FileNotFoundError(f"Missing teacher checkpoint: {teacher_checkpoint_path}")
-
-    print(f"Loading teacher checkpoint: {teacher_checkpoint_path}")
-    ckpt = torch.load(teacher_checkpoint_path, map_location="cpu")
-
-    config = ckpt.get("config", {})
-    teacher_model_name = config.get("model_name", "mobilenet_v2")
-    teacher_head_type = config.get("head_type", "separate")
-
-    checkpoint_num_answers = config.get("num_answer_classes", num_answers)
-    if int(checkpoint_num_answers) != int(num_answers):
-        raise ValueError(
-            "Teacher checkpoint answer vocab size does not match current dataset.\n"
-            f"  teacher num answers: {checkpoint_num_answers}\n"
-            f"  current num answers: {num_answers}\n"
-            "Train a new object+color teacher first, or implement explicit vocab mapping."
-        )
-
-    print("Teacher config:")
-    print(f"  model_name: {teacher_model_name}")
-    print(f"  head_type:  {teacher_head_type}")
-
-    teacher = build_baseline_vqa_model(
-        vocab_size=question_vocab.size,
-        num_answers=num_answers,
-        pad_id=question_vocab.pad_id,
-        model_name=teacher_model_name,
-        pretrained=False,
-        freeze_image_encoder=False,
-        head_type=teacher_head_type,
-        object_answer_ids=answer_ids_by_type["object"],
-        color_answer_ids=answer_ids_by_type["color"],
-        number_answer_ids=None,
-    )
-
-    missing, unexpected = teacher.load_state_dict(
-        ckpt["model_state_dict"],
-        strict=False,
-    )
-
-    if missing:
-        print("WARNING: Missing teacher keys:")
-        for key in missing[:20]:
-            print(f"  {key}")
-        if len(missing) > 20:
-            print(f"  ... {len(missing) - 20} more")
-
-    if unexpected:
-        print("WARNING: Unexpected teacher keys:")
-        for key in unexpected[:20]:
-            print(f"  {key}")
-        if len(unexpected) > 20:
-            print(f"  ... {len(unexpected) - 20} more")
-
-    teacher.to(device)
-    teacher.eval()
-
-    for param in teacher.parameters():
-        param.requires_grad = False
-
-    print(
-        f"Teacher parameters: {count_parameters(teacher, trainable_only=False):,}"
-    )
-
-    return teacher
-
-
-def compute_supervised_kd_loss(
-    student_logits: torch.Tensor,
-    targets: torch.Tensor,
-    ce_criterion: nn.Module,
-    teacher_logits: torch.Tensor | None = None,
-    kd_alpha: float = 0.0,
-    kd_temperature: float = 3.0,
-) -> tuple[torch.Tensor, dict[str, float]]:
-    ce_loss = ce_criterion(student_logits, targets)
-
-    if teacher_logits is None or kd_alpha <= 0.0:
-        return ce_loss, {
-            "loss_ce": float(ce_loss.detach().item()),
-            "loss_kd": 0.0,
-            "loss_total": float(ce_loss.detach().item()),
-        }
-
-    if kd_temperature <= 0.0:
-        raise ValueError("kd_temperature must be > 0.")
-
-    temperature = float(kd_temperature)
-
-    student_log_probs = F.log_softmax(student_logits / temperature, dim=1)
-    teacher_probs = F.softmax(teacher_logits / temperature, dim=1)
-
-    kd_loss = F.kl_div(
-        student_log_probs,
-        teacher_probs,
-        reduction="batchmean",
-    ) * (temperature * temperature)
-
-    total_loss = (1.0 - kd_alpha) * ce_loss + kd_alpha * kd_loss
-
-    return total_loss, {
-        "loss_ce": float(ce_loss.detach().item()),
-        "loss_kd": float(kd_loss.detach().item()),
-        "loss_total": float(total_loss.detach().item()),
-    }
-
-
-def train_one_epoch(
-    student: nn.Module,
-    teacher: nn.Module | None,
-    loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    ce_criterion: nn.Module,
-    device: torch.device,
-    epoch: int,
-    log_interval: int,
-    use_amp: bool,
-    kd_alpha: float,
-    kd_temperature: float,
-) -> dict:
-    student.train()
-    if teacher is not None:
-        teacher.eval()
-
-    loss_meter = AverageMeter()
-    ce_meter = AverageMeter()
-    kd_meter = AverageMeter()
-    acc_tracker = AccuracyTracker()
-
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
-
-    start_time = time.time()
-
-    for step, batch in enumerate(loader, start=1):
-        batch_dev = move_batch_to_device(batch, device)
-
-        images = batch_dev["images"]
-        question_ids = batch_dev["question_ids"]
-        question_len = batch_dev["question_len"]
-        answer_id = batch_dev["answer_id"]
-        type_id = batch_dev["type_id"]
-        type_onehot = batch_dev["type_onehot"]
-
-        optimizer.zero_grad(set_to_none=True)
-
-        with torch.no_grad():
-            teacher_logits = None
-            if teacher is not None:
-                with torch.amp.autocast("cuda", enabled=use_amp):
-                    teacher_logits = teacher(
-                        images=batch_dev["teacher_images"],
-                        question_ids=question_ids,
-                        question_len=question_len,
-                        type_id=type_id,
-                    )
-
-        with torch.amp.autocast("cuda", enabled=use_amp):
-            student_logits = student(
-                images=images,
-                type_onehot=type_onehot,
-                type_id=type_id,
-            )
-
-            loss, loss_parts = compute_supervised_kd_loss(
-                student_logits=student_logits,
-                targets=answer_id,
-                ce_criterion=ce_criterion,
-                teacher_logits=teacher_logits,
-                kd_alpha=kd_alpha,
-                kd_temperature=kd_temperature,
-            )
-
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-
-        batch_size = images.shape[0]
-
-        loss_meter.update(loss_parts["loss_total"], n=batch_size)
-        ce_meter.update(loss_parts["loss_ce"], n=batch_size)
-        kd_meter.update(loss_parts["loss_kd"], n=batch_size)
-
-        acc_tracker.update(student_logits.detach(), answer_id, type_id)
-
-        if log_interval > 0 and step % log_interval == 0:
-            partial_metrics = acc_tracker.compute()
-            partial_metrics["loss"] = loss_meter.avg
-            elapsed = time.time() - start_time
-
-            print(
-                f"Epoch {epoch:03d} | step {step:05d}/{len(loader):05d} | "
-                f"{format_metrics(partial_metrics, prefix='train')} | "
-                f"ce={ce_meter.avg:.4f} | kd={kd_meter.avg:.4f} | "
-                f"time={elapsed:.1f}s"
-            )
-
-    metrics = acc_tracker.compute()
-    metrics["loss"] = loss_meter.avg
-    metrics["loss_ce"] = ce_meter.avg
-    metrics["loss_kd"] = kd_meter.avg
-    metrics["time_sec"] = time.time() - start_time
-
-    return metrics
-
-
-@torch.no_grad()
-def evaluate(
-    student: nn.Module,
-    loader: DataLoader,
-    ce_criterion: nn.Module,
-    device: torch.device,
-    use_amp: bool,
-    id_to_answer: dict[int, str] | None = None,
-) -> tuple[dict, list[tuple[str, str, int]]]:
-    student.eval()
-
-    loss_meter = AverageMeter()
-    acc_tracker = AccuracyTracker()
-    confusion_tracker = ConfusionTracker(id_to_answer) if id_to_answer is not None else None
-
-    start_time = time.time()
-
-    for batch in loader:
-        batch_dev = move_batch_to_device(batch, device)
-
-        images = batch_dev["images"]
-        answer_id = batch_dev["answer_id"]
-        type_id = batch_dev["type_id"]
-        type_onehot = batch_dev["type_onehot"]
-
-        with torch.amp.autocast("cuda", enabled=use_amp):
-            logits = student(
-                images=images,
-                type_onehot=type_onehot,
-                type_id=type_id,
-            )
-            loss = ce_criterion(logits, answer_id)
-
-        batch_size = images.shape[0]
-
-        loss_meter.update(loss.item(), n=batch_size)
-        acc_tracker.update(logits, answer_id, type_id)
-
-        if confusion_tracker is not None:
-            confusion_tracker.update(logits, answer_id)
-
-    metrics = acc_tracker.compute()
-    metrics["loss"] = loss_meter.avg
-    metrics["time_sec"] = time.time() - start_time
-
-    confusions = confusion_tracker.topk(20) if confusion_tracker is not None else []
-
-    return metrics, confusions
-
-
-def save_checkpoint(
-    path: Path,
-    student: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    epoch: int,
-    best_val_acc: float,
-    config: dict,
-    train_metrics: dict,
-    val_metrics: dict,
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    torch.save(
-        {
-            "epoch": epoch,
-            "model_state_dict": student.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "best_val_acc": best_val_acc,
-            "config": config,
-            "train_metrics": train_metrics,
-            "val_metrics": val_metrics,
-        },
-        path,
-    )
-
-
-def append_log_csv(path: Path, row: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    file_exists = path.exists()
-
-    with path.open("a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
-
-        if not file_exists:
-            writer.writeheader()
-
-        writer.writerow(row)
-
-
-def build_config(
-    args: argparse.Namespace,
-    device: torch.device,
-    use_amp: bool,
-    student: nn.Module,
-    question_vocab: QuestionVocab,
-    answer_vocab: dict,
-    answer_ids_by_type: dict[str, list[int]],
-    teacher: nn.Module | None,
-) -> dict:
-    config = make_json_serializable(vars(args))
-
-    config["device"] = str(device)
-    config["use_amp"] = bool(use_amp)
-    config["model_family"] = "gapcnn_s"
-    config["num_model_parameters_trainable"] = int(
-        count_parameters(student, trainable_only=True)
-    )
-    config["num_model_parameters_total"] = int(
-        count_parameters(student, trainable_only=False)
-    )
-    config["estimated_int8_weight_size_bytes"] = int(
-        estimate_int8_weight_size_bytes(student, trainable_only=False)
-    )
-    config["estimated_int8_weight_size_mb"] = (
-        config["estimated_int8_weight_size_bytes"] / (1024 * 1024)
-    )
-    config["question_vocab_size"] = int(question_vocab.size)
-    config["num_answer_classes"] = int(len(answer_vocab["id_to_answer"]))
-    config["num_object_answers"] = int(len(answer_vocab["object_answers"]))
-    config["num_color_answers"] = int(len(answer_vocab["color_answers"]))
-    config["answer_ids_by_type"] = make_json_serializable(answer_ids_by_type)
-    config["uses_teacher"] = teacher is not None
-
-    return config
+from src.models import build_gapcnn_s_vqa_model
+from src.evaluation import print_top_confusions
+from src.training import (
+    build_config,
+    build_teacher_model,
+    train_one_epoch,
+    evaluate_epoch,
+    save_checkpoint,
+)
 
 
 def main() -> None:
@@ -714,11 +281,12 @@ def main() -> None:
         args=args,
         device=device,
         use_amp=use_amp,
-        student=student,
+        model=student,
         question_vocab=question_vocab,
         answer_vocab=answer_vocab,
         answer_ids_by_type=answer_ids_by_type,
         teacher=teacher,
+        model_family="gapcnn_s",
     )
 
     with config_path.open("w", encoding="utf-8") as f:
@@ -737,7 +305,7 @@ def main() -> None:
 
     for epoch in range(1, args.epochs + 1):
         train_metrics = train_one_epoch(
-            student=student,
+            model=student,
             teacher=teacher,
             loader=train_loader,
             optimizer=optimizer,
@@ -750,8 +318,8 @@ def main() -> None:
             kd_temperature=args.kd_temperature,
         )
 
-        val_metrics, val_confusions = evaluate(
-            student=student,
+        val_metrics, val_confusions = evaluate_epoch(
+            model=student,
             loader=val_loader,
             ce_criterion=ce_criterion,
             device=device,
@@ -772,7 +340,7 @@ def main() -> None:
 
             save_checkpoint(
                 path=best_ckpt_path,
-                student=student,
+                model=student,
                 optimizer=optimizer,
                 epoch=epoch,
                 best_val_acc=best_val_acc,
@@ -785,7 +353,7 @@ def main() -> None:
 
         save_checkpoint(
             path=last_ckpt_path,
-            student=student,
+            model=student,
             optimizer=optimizer,
             epoch=epoch,
             best_val_acc=best_val_acc,
@@ -800,8 +368,6 @@ def main() -> None:
             "epoch": epoch,
             "lr": current_lr,
             "train_loss": train_metrics["loss"],
-            "train_loss_ce": train_metrics["loss_ce"],
-            "train_loss_kd": train_metrics["loss_kd"],
             "train_acc": train_metrics["accuracy"],
             "train_acc_object": train_metrics["accuracy_object"],
             "train_acc_color": train_metrics["accuracy_color"],
@@ -813,11 +379,6 @@ def main() -> None:
             "val_time_sec": val_metrics["time_sec"],
             "best_val_acc": best_val_acc,
             "best_epoch": best_epoch,
-            "kd_alpha": args.kd_alpha,
-            "kd_temperature": args.kd_temperature,
-            "uses_teacher": teacher is not None,
-            "params_total": total_params,
-            "int8_weight_size_mb": int8_bytes / (1024 * 1024),
         }
 
         append_log_csv(log_csv_path, row)
@@ -829,10 +390,6 @@ def main() -> None:
             f"{'BEST' if improved else 'no improvement'}"
         )
         print(format_metrics(train_metrics, prefix="train"))
-        print(
-            f"train ce={train_metrics['loss_ce']:.4f} | "
-            f"kd={train_metrics['loss_kd']:.4f}"
-        )
         print(format_metrics(val_metrics, prefix="val"))
         print(f"best_val_acc={best_val_acc:.4f} at epoch {best_epoch}")
         print_top_confusions(val_confusions[:10], title="Val top confusions:")

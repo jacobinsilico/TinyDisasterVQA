@@ -1,0 +1,424 @@
+{
+  "accuracy": 0.05,
+  "num_samples": 100,
+  "accuracy_object": 0.013888888888888888,
+  "num_object": 72,
+  "accuracy_color": 0.14285714285714285,
+  "num_color": 28,
+  "loss": 3.901528949737549,
+  "time_sec": 0.5008773803710938,
+  "per_answer_accuracy": {
+    "airplane": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0
+    },
+    "ball": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "bat": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "bed": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0
+    },
+    "bicycle": {
+      "correct": 1,
+      "total": 1,
+      "accuracy": 1.0
+    },
+    "bird": {
+      "correct": 0,
+      "total": 4,
+      "accuracy": 0.0
+    },
+    "black": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "blue": {
+      "correct": 0,
+      "total": 3,
+      "accuracy": 0.0
+    },
+    "boat": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0
+    },
+    "brown": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "bus": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0
+    },
+    "cake": {
+      "correct": 0,
+      "total": 4,
+      "accuracy": 0.0
+    },
+    "car": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "clock": {
+      "correct": 0,
+      "total": 6,
+      "accuracy": 0.0
+    },
+    "computer": {
+      "correct": 0,
+      "total": 3,
+      "accuracy": 0.0
+    },
+    "cow": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0
+    },
+    "dog": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0
+    },
+    "donut": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0
+    },
+    "elephant": {
+      "correct": 0,
+      "total": 3,
+      "accuracy": 0.0
+    },
+    "giraffe": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0
+    },
+    "gray": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "horse": {
+      "correct": 0,
+      "total": 5,
+      "accuracy": 0.0
+    },
+    "hydrant": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0
+    },
+    "kite": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "motorcycle": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "orange": {
+      "correct": 4,
+      "total": 4,
+      "accuracy": 1.0
+    },
+    "phone": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0
+    },
+    "pizza": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "plate": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "purple": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "red": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "room": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "sheep": {
+      "correct": 0,
+      "total": 3,
+      "accuracy": 0.0
+    },
+    "skateboard": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "toilet": {
+      "correct": 0,
+      "total": 4,
+      "accuracy": 0.0
+    },
+    "train": {
+      "correct": 0,
+      "total": 4,
+      "accuracy": 0.0
+    },
+    "truck": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0
+    },
+    "umbrella": {
+      "correct": 0,
+      "total": 3,
+      "accuracy": 0.0
+    },
+    "vase": {
+      "correct": 0,
+      "total": 2,
+      "accuracy": 0.0
+    },
+    "white": {
+      "correct": 0,
+      "total": 6,
+      "accuracy": 0.0
+    },
+    "yellow": {
+      "correct": 0,
+      "total": 5,
+      "accuracy": 0.0
+    },
+    "zebra": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0
+    }
+  },
+  "top_confusions": [
+    {
+      "target": "clock",
+      "pred": "bicycle",
+      "count": 6
+    },
+    {
+      "target": "white",
+      "pred": "orange",
+      "count": 6
+    },
+    {
+      "target": "horse",
+      "pred": "bicycle",
+      "count": 5
+    },
+    {
+      "target": "yellow",
+      "pred": "orange",
+      "count": 5
+    },
+    {
+      "target": "bird",
+      "pred": "bicycle",
+      "count": 4
+    },
+    {
+      "target": "train",
+      "pred": "bicycle",
+      "count": 4
+    },
+    {
+      "target": "toilet",
+      "pred": "bicycle",
+      "count": 4
+    },
+    {
+      "target": "cake",
+      "pred": "bicycle",
+      "count": 4
+    },
+    {
+      "target": "computer",
+      "pred": "bicycle",
+      "count": 3
+    },
+    {
+      "target": "umbrella",
+      "pred": "bicycle",
+      "count": 3
+    },
+    {
+      "target": "sheep",
+      "pred": "bicycle",
+      "count": 3
+    },
+    {
+      "target": "elephant",
+      "pred": "bicycle",
+      "count": 3
+    },
+    {
+      "target": "blue",
+      "pred": "orange",
+      "count": 3
+    },
+    {
+      "target": "room",
+      "pred": "bicycle",
+      "count": 2
+    },
+    {
+      "target": "brown",
+      "pred": "orange",
+      "count": 2
+    },
+    {
+      "target": "ball",
+      "pred": "bicycle",
+      "count": 2
+    },
+    {
+      "target": "black",
+      "pred": "orange",
+      "count": 2
+    },
+    {
+      "target": "car",
+      "pred": "bicycle",
+      "count": 2
+    },
+    {
+      "target": "pizza",
+      "pred": "bicycle",
+      "count": 2
+    },
+    {
+      "target": "plate",
+      "pred": "bicycle",
+      "count": 2
+    },
+    {
+      "target": "kite",
+      "pred": "bicycle",
+      "count": 2
+    },
+    {
+      "target": "skateboard",
+      "pred": "bicycle",
+      "count": 2
+    },
+    {
+      "target": "red",
+      "pred": "orange",
+      "count": 2
+    },
+    {
+      "target": "motorcycle",
+      "pred": "bicycle",
+      "count": 2
+    },
+    {
+      "target": "vase",
+      "pred": "bicycle",
+      "count": 2
+    },
+    {
+      "target": "purple",
+      "pred": "orange",
+      "count": 2
+    },
+    {
+      "target": "gray",
+      "pred": "orange",
+      "count": 2
+    },
+    {
+      "target": "bat",
+      "pred": "bicycle",
+      "count": 2
+    },
+    {
+      "target": "bed",
+      "pred": "bicycle",
+      "count": 1
+    },
+    {
+      "target": "truck",
+      "pred": "bicycle",
+      "count": 1
+    },
+    {
+      "target": "phone",
+      "pred": "bicycle",
+      "count": 1
+    },
+    {
+      "target": "cow",
+      "pred": "bicycle",
+      "count": 1
+    },
+    {
+      "target": "donut",
+      "pred": "bicycle",
+      "count": 1
+    },
+    {
+      "target": "boat",
+      "pred": "bicycle",
+      "count": 1
+    },
+    {
+      "target": "airplane",
+      "pred": "bicycle",
+      "count": 1
+    },
+    {
+      "target": "hydrant",
+      "pred": "bicycle",
+      "count": 1
+    },
+    {
+      "target": "zebra",
+      "pred": "bicycle",
+      "count": 1
+    },
+    {
+      "target": "giraffe",
+      "pred": "bicycle",
+      "count": 1
+    },
+    {
+      "target": "dog",
+      "pred": "bicycle",
+      "count": 1
+    },
+    {
+      "target": "bus",
+      "pred": "bicycle",
+      "count": 1
+    }
+  ]
+}

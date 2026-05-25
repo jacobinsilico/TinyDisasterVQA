@@ -1,9 +1,4 @@
-"""
-Backwards compatible shell for VQA models.
-"""
-
 from src.models.blocks import ConvBNReLU, make_mlp
-from src.utils.model_info import count_parameters, estimate_int8_weight_size_bytes
 from src.models.backbones import (
     SmallCNNEncoder,
     GAPCNNSmallEncoder,
@@ -20,14 +15,3 @@ from src.models.vqa_models import (
     build_baseline_vqa_model,
     build_gapcnn_s_vqa_model,
 )
-
-# Constants
-TYPE_TO_ID = {
-    "object": 0,
-    "color": 1,
-}
-
-ID_TO_TYPE = {
-    0: "object",
-    1: "color",
-}

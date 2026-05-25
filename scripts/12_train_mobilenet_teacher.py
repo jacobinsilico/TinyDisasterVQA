@@ -6,7 +6,7 @@ Task:
   image + question + question type -> object/color answer prediction
 
 Recommended run:
-  python scripts/11_train_mobilenet_teacher.py \
+  python scripts/12_train_mobilenet_teacher.py \
     --model-name mobilenet_v3_large \
     --head-type separate \
     --epochs 10 \
@@ -16,7 +16,7 @@ Recommended run:
     --checkpoint-dir /content/drive/MyDrive/edge-vlm-gap9-runs/mobilenet_v3_large_teacher_oc
 
 MobileNetV2 fallback:
-  python scripts/11_train_mobilenet_teacher.py \
+  python scripts/12_train_mobilenet_teacher.py \
     --model-name mobilenet_v2 \
     --head-type separate \
     --epochs 10 \
@@ -27,15 +27,11 @@ MobileNetV2 fallback:
 """
 
 import argparse
-import csv
 import json
-import random
 import sys
 import time
 from pathlib import Path
-from typing import Any
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -44,279 +40,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.dataset import CocoQADataset
-from src.metrics import (
-    AccuracyTracker,
-    AverageMeter,
-    ConfusionTracker,
-    format_metrics,
-    print_top_confusions,
+from src.data import (
+    CocoQADataset,
+    QuestionVocab,
+    load_answer_vocab,
+    build_answer_ids_from_vocab,
+    id_to_answer_from_vocab,
 )
-from src.model import build_baseline_vqa_model, count_parameters
-from src.text import QuestionVocab
-
-
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-
-def read_json(path: Path) -> dict:
-    if not path.exists():
-        raise FileNotFoundError(f"Missing JSON file: {path}")
-
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def load_answer_vocab(path: Path) -> dict:
-    data = read_json(path)
-
-    required_keys = ["answer_to_id", "id_to_answer", "object_answers", "color_answers"]
-    for key in required_keys:
-        if key not in data:
-            raise KeyError(f"answer_vocab.json missing required key: {key}")
-
-    return data
-
-
-def id_to_answer_from_vocab(answer_vocab: dict) -> dict[int, str]:
-    return {int(k): v for k, v in answer_vocab["id_to_answer"].items()}
-
-
-def build_answer_ids_from_vocab(answer_vocab: dict) -> dict[str, list[int]]:
-    answer_to_id = answer_vocab["answer_to_id"]
-
-    object_ids = [
-        int(answer_to_id[ans])
-        for ans in answer_vocab["object_answers"]
-        if ans in answer_to_id
-    ]
-
-    color_ids = [
-        int(answer_to_id[ans])
-        for ans in answer_vocab["color_answers"]
-        if ans in answer_to_id
-    ]
-
-    if not object_ids:
-        raise ValueError("No object answer IDs found.")
-    if not color_ids:
-        raise ValueError("No color answer IDs found.")
-
-    return {
-        "object": sorted(object_ids),
-        "color": sorted(color_ids),
-    }
-
-
-def make_json_serializable(obj: Any) -> Any:
-    if isinstance(obj, Path):
-        return str(obj)
-
-    if isinstance(obj, dict):
-        return {k: make_json_serializable(v) for k, v in obj.items()}
-
-    if isinstance(obj, (list, tuple, set)):
-        return [make_json_serializable(v) for v in obj]
-
-    if isinstance(obj, np.integer):
-        return int(obj)
-
-    if isinstance(obj, np.floating):
-        return float(obj)
-
-    return obj
-
-
-def move_batch_to_device(batch: dict, device: torch.device) -> tuple:
-    images = batch["image"].to(device, non_blocking=True)
-    question_ids = batch["question_ids"].to(device, non_blocking=True)
-    question_len = batch["question_len"].to(device, non_blocking=True)
-    answer_id = batch["answer_id"].to(device, non_blocking=True)
-    type_id = batch["type_id"].to(device, non_blocking=True)
-
-    return images, question_ids, question_len, answer_id, type_id
-
-
-def train_one_epoch(
-    model: nn.Module,
-    loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    criterion: nn.Module,
-    device: torch.device,
-    epoch: int,
-    log_interval: int,
-    use_amp: bool,
-) -> dict:
-    model.train()
-
-    loss_meter = AverageMeter()
-    acc_tracker = AccuracyTracker()
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
-
-    start_time = time.time()
-
-    for step, batch in enumerate(loader, start=1):
-        images, question_ids, question_len, answer_id, type_id = move_batch_to_device(
-            batch, device
-        )
-
-        optimizer.zero_grad(set_to_none=True)
-
-        with torch.amp.autocast("cuda", enabled=use_amp):
-            logits = model(
-                images=images,
-                question_ids=question_ids,
-                question_len=question_len,
-                type_id=type_id,
-            )
-            loss = criterion(logits, answer_id)
-
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-
-        batch_size = images.shape[0]
-
-        loss_meter.update(loss.item(), n=batch_size)
-        acc_tracker.update(logits.detach(), answer_id, type_id)
-
-        if log_interval > 0 and step % log_interval == 0:
-            partial = acc_tracker.compute()
-            partial["loss"] = loss_meter.avg
-            elapsed = time.time() - start_time
-
-            print(
-                f"Epoch {epoch:03d} | step {step:05d}/{len(loader):05d} | "
-                f"{format_metrics(partial, prefix='train')} | "
-                f"time={elapsed:.1f}s"
-            )
-
-    metrics = acc_tracker.compute()
-    metrics["loss"] = loss_meter.avg
-    metrics["time_sec"] = time.time() - start_time
-
-    return metrics
-
-
-@torch.no_grad()
-def evaluate(
-    model: nn.Module,
-    loader: DataLoader,
-    criterion: nn.Module,
-    device: torch.device,
-    use_amp: bool,
-    id_to_answer: dict[int, str] | None = None,
-) -> tuple[dict, list[tuple[str, str, int]]]:
-    model.eval()
-
-    loss_meter = AverageMeter()
-    acc_tracker = AccuracyTracker()
-    confusion_tracker = ConfusionTracker(id_to_answer) if id_to_answer is not None else None
-
-    start_time = time.time()
-
-    for batch in loader:
-        images, question_ids, question_len, answer_id, type_id = move_batch_to_device(
-            batch, device
-        )
-
-        with torch.amp.autocast("cuda", enabled=use_amp):
-            logits = model(
-                images=images,
-                question_ids=question_ids,
-                question_len=question_len,
-                type_id=type_id,
-            )
-            loss = criterion(logits, answer_id)
-
-        batch_size = images.shape[0]
-
-        loss_meter.update(loss.item(), n=batch_size)
-        acc_tracker.update(logits, answer_id, type_id)
-
-        if confusion_tracker is not None:
-            confusion_tracker.update(logits, answer_id)
-
-    metrics = acc_tracker.compute()
-    metrics["loss"] = loss_meter.avg
-    metrics["time_sec"] = time.time() - start_time
-
-    confusions = confusion_tracker.topk(20) if confusion_tracker is not None else []
-
-    return metrics, confusions
-
-
-def save_checkpoint(
-    path: Path,
-    model: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    epoch: int,
-    best_val_acc: float,
-    config: dict,
-    train_metrics: dict,
-    val_metrics: dict,
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    torch.save(
-        {
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "best_val_acc": best_val_acc,
-            "config": config,
-            "train_metrics": train_metrics,
-            "val_metrics": val_metrics,
-        },
-        path,
-    )
-
-
-def append_log_csv(path: Path, row: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    file_exists = path.exists()
-
-    with path.open("a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
-
-        if not file_exists:
-            writer.writeheader()
-
-        writer.writerow(row)
-
-
-def build_config(
-    args: argparse.Namespace,
-    device: torch.device,
-    use_amp: bool,
-    model: nn.Module,
-    question_vocab: QuestionVocab,
-    answer_vocab: dict,
-    answer_ids_by_type: dict[str, list[int]],
-) -> dict:
-    config = make_json_serializable(vars(args))
-
-    config["device"] = str(device)
-    config["use_amp"] = bool(use_amp)
-    config["model_family"] = "mobilenet_teacher"
-    config["num_model_parameters_trainable"] = int(
-        count_parameters(model, trainable_only=True)
-    )
-    config["num_model_parameters_total"] = int(
-        count_parameters(model, trainable_only=False)
-    )
-    config["question_vocab_size"] = int(question_vocab.size)
-    config["num_answer_classes"] = int(len(answer_vocab["id_to_answer"]))
-    config["num_object_answers"] = int(len(answer_vocab["object_answers"]))
-    config["num_color_answers"] = int(len(answer_vocab["color_answers"]))
-    config["answer_ids_by_type"] = make_json_serializable(answer_ids_by_type)
-
-    return config
+from src.utils import set_seed, append_log_csv, format_metrics, count_parameters
+from src.models import build_baseline_vqa_model
+from src.evaluation import print_top_confusions
+from src.training import build_config, train_one_epoch, evaluate_epoch, save_checkpoint
 
 
 def main() -> None:
@@ -505,6 +239,7 @@ def main() -> None:
         question_vocab=question_vocab,
         answer_vocab=answer_vocab,
         answer_ids_by_type=answer_ids_by_type,
+        model_family="mobilenet_teacher",
     )
 
     with config_path.open("w", encoding="utf-8") as f:
@@ -524,19 +259,20 @@ def main() -> None:
     for epoch in range(1, args.epochs + 1):
         train_metrics = train_one_epoch(
             model=model,
+            teacher=None,
             loader=train_loader,
             optimizer=optimizer,
-            criterion=criterion,
+            ce_criterion=criterion,
             device=device,
             epoch=epoch,
             log_interval=args.log_interval,
             use_amp=use_amp,
         )
 
-        val_metrics, val_confusions = evaluate(
+        val_metrics, val_confusions = evaluate_epoch(
             model=model,
             loader=val_loader,
-            criterion=criterion,
+            ce_criterion=criterion,
             device=device,
             use_amp=use_amp,
             id_to_answer=id_to_answer,
