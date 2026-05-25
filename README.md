@@ -1,86 +1,42 @@
-# COCO-QA Supervised VQA and Text-Embedding Prototype Cosine Pipeline
+# TinyDisasterVQA
 
-This repository implements a deployable visual-question answering (VQA) pipeline tailored for edge devices (such as GAP9). It supports dual-head classification modes, training-only question vocab generation, mixed precision acceleration, and lightweight text-embedding classification based on cosine prototype mappings.
+TinyDisasterVQA is a small-scale disaster-focused Visual Question Answering project.
 
----
+The goal is to train compact VQA models that can answer simple questions about disaster-scene images, with the long-term target of deploying a small student model on edge hardware such as GAP9.
 
-## Workspace Directory Structure
+## Project idea
 
-- `src/data/dataset.py`: Fully whitelisted 40 object and 10 color category dataset loader.
-- `src/models/vqa_models.py`: Dual-mode visual-question model (`classifier` and `prototype` head modes) with separate classifier heads and logit scaling.
-- `scripts/build_answer_prototypes.py`: Offline text-embedding projector with deterministically seeded hash fallback vector capabilities.
-- `scripts/train_question_vqa.py`: Colab-ready, mixed-precision enabled supervised training baseline runner.
-- `scripts/smoke_test_prototype_model.py`: Dimensional shape, L2-normalization, and loss verification checks.
+Given an image and a simple question, the model predicts an answer.
 
----
+Example questions:
 
-## Google Colab Sanity Command Guide
+- What is in the image?
+- Is there flooding?
+- What type of area is shown?
+- Are buildings visible?
+- Is the road flooded?
 
-Below is the structured list of Colab shell commands to check off dependencies, manifests, downloader operations, prototype generation, shape validation, and training runs.
+The project focuses on disaster-related datasets such as FloodNet and RescueNet.
 
-### 1. Install Workspace Requirements
-```bash
-!pip install torch torchvision pillow sentence-transformers matplotlib
-```
+## Current focus
 
-### 2. Run Manifest-Driven Image Downloader
-Download exactly the whitelisted subset of COCO images to local directories, verifying disjoint splits:
-```bash
-!python scripts/04_download_images.py --manifest-dir data/processed --image-root data/images
-```
+The current focus is:
 
-### 3. Generate Projected Answer Embedding Prototypes
-Generate projected offline class weights using SentenceTransformers (`all-MiniLM-L6-v2`) or our deterministic hash-seeded fallback vector engine:
-```bash
-!python scripts/build_answer_prototypes.py
-```
+1. Explore the FloodNet dataset
+2. Clean and understand the image/question/answer structure
+3. Build a simple training pipeline
+4. Train a teacher model
+5. Train smaller student models
+6. Evaluate model size, accuracy, and deployment feasibility
 
-### 4. Run Shape & Norm Verification Smoke Tests
-Programmatically verify batch dimensions, model layers compatibility, prototype unit L2 norms, and type-aware loss loops:
-```bash
-!python scripts/smoke_test_prototype_model.py
-```
+## Repository structure
 
-### 5. Train Classifier Student Model (`gapcnn_s`, 128x128)
-```bash
-!python scripts/train_question_vqa.py \
-    --head-type classifier \
-    --image-encoder gapcnn_s \
-    --image-size 128 \
-    --epochs 20 \
-    --batch-size 64 \
-    --lr 1e-3 \
-    --run-name classifier_student_128 \
-    --device cuda \
-    --amp
-```
-
-### 6. Train Classifier Teacher Model (`mobilenet_v3_large`, 224x224)
-```bash
-!python scripts/train_question_vqa.py \
-    --head-type classifier \
-    --image-encoder mobilenet_v3_large \
-    --image-size 224 \
-    --epochs 20 \
-    --batch-size 64 \
-    --lr 3e-4 \
-    --run-name classifier_teacher_224 \
-    --device cuda \
-    --amp
-```
-
-### 7. Train Prototype Cosine Student Model (`gapcnn_s`, 128x128)
-Train student model mapping projected unit prototype cosine alignments scaled by a learnable scale parameter:
-```bash
-!python scripts/train_question_vqa.py \
-    --head-type prototype \
-    --image-encoder gapcnn_s \
-    --image-size 128 \
-    --epochs 20 \
-    --batch-size 64 \
-    --lr 1e-3 \
-    --run-name prototype_student_128 \
-    --device cuda \
-    --amp \
-    --learn-logit-scale
-```
+```text
+TinyDisasterVQA/
+├── data/              # Dataset metadata, annotations, splits
+├── images/            # Dataset images
+├── notebooks/         # Dataset exploration and experiments
+├── scripts/           # Training, evaluation, preprocessing scripts
+├── src/               # Main project code
+├── runs/              # Training outputs and checkpoints
+└── README.md
