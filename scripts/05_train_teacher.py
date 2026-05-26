@@ -309,12 +309,21 @@ def train_one_epoch(
         )
 
         if step % args.log_interval == 0 or step == 1 or step == len(loader):
-            current = metrics.compute()["overall"]
+            current_metrics = metrics.compute()
+            current = current_metrics["overall"]
+            by_head = current_metrics["by_head"]
+
+            head_str = " | ".join(
+                f"{head}={values['accuracy']:.3f}"
+                for head, values in sorted(by_head.items())
+            )
+
             print(
                 f"Epoch {epoch:03d} | "
                 f"step {step:04d}/{len(loader):04d} | "
                 f"loss={loss_meter.avg:.4f} | "
                 f"acc={current['accuracy']:.4f} | "
+                f"{head_str} | "
                 f"time={timer.elapsed_str()}"
             )
 
