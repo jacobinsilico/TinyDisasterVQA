@@ -229,7 +229,7 @@ dataset/images
 outputs 
 runs/ 
 
-
+docs/
 # Python
 __pycache__/
 *.pyc
