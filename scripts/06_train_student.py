@@ -2,7 +2,7 @@
 """
 06_train_student.py
 
-Train the TDM-S student model.
+Train TinyDisasterVQA TDM student models.
 
 Modes:
   1. CE only:
@@ -15,18 +15,22 @@ Run CE-only:
 
 PYTHONPATH=src python scripts/06_train_student.py \
   --mode ce \
+  --student-variant tdm_s \
+  --head-type single \
   --epochs 50 \
   --batch-size 64 \
-  --run-name tdm_s_ce
+  --run-name tdm_s_single_ce
 
 Run KD:
 
 PYTHONPATH=src python scripts/06_train_student.py \
   --mode kd \
+  --student-variant tdm_s \
+  --head-type single \
   --teacher-checkpoint /content/drive/MyDrive/TinyDisasterVQA/runs/convnext_tiny_teacher_edge_global/checkpoints/best.pt \
   --epochs 50 \
   --batch-size 64 \
-  --run-name tdm_s_kd
+  --run-name tdm_s_single_kd
 
 Default early stopping:
   stop after 5 epochs without valid accuracy improvement.
@@ -53,8 +57,7 @@ if str(SRC_DIR) not in sys.path:
 from tinydisastervqa.data import FloodNetVQADataset, get_image_transform, load_json  # noqa: E402
 from tinydisastervqa.metrics import ClassificationMetrics, format_metrics  # noqa: E402
 from tinydisastervqa.models import (  # noqa: E402
-    build_tdm_s_from_metadata,
-    build_tdm_m_from_metadata,
+    build_tdm_from_metadata,
     build_teacher_from_metadata,
     describe_model,
 )
@@ -103,19 +106,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overfit-samples", type=int, default=0)
 
     # Student model.
-    parser.add_argument("--student-size", type=str, default="s", choices=["s", "m"])
+    parser.add_argument(
+        "--student-variant",
+        type=str,
+        default="tdm_s",
+        choices=["tdm_xxs", "tdm_xs", "tdm_s", "tdm_m"],
+        help="Student size/variant to train.",
+    )
+    # Backwards-compatible alias used by older commands: --student-size s/m.
+    parser.add_argument(
+        "--student-size",
+        type=str,
+        default=None,
+        choices=["xxs", "xs", "s", "m", "tdm_xxs", "tdm_xs", "tdm_s", "tdm_m"],
+        help="Deprecated alias for --student-variant.",
+    )
+    parser.add_argument(
+        "--head-type",
+        type=str,
+        default="single",
+        choices=["single", "multihead"],
+        help="single = one 19-class head; multihead = one 19-class head per edge_head.",
+    )
     parser.add_argument("--num-classes", type=int, default=19)
     parser.add_argument("--num-question-templates", type=int, default=31)
-    parser.add_argument("--template-embed-dim", type=int, default=32)
-    parser.add_argument("--fusion-hidden-dim", type=int, default=192)
-    parser.add_argument("--fusion-dropout", type=float, default=0.1)
+    parser.add_argument("--template-embed-dim", type=int, default=None)
+    parser.add_argument("--fusion-hidden-dim", type=int, default=None)
+    parser.add_argument("--fusion-dropout", type=float, default=None)
+    parser.add_argument("--fusion-layers", type=int, default=None)
 
     # Teacher model config, must match saved teacher checkpoint.
     parser.add_argument(
         "--teacher-backbone",
         type=str,
         default="convnext_tiny",
-        choices=["convnext_tiny", "efficientnet_b0", "efficientnet_b1", "resnet18", "resnet50"],
+        choices=["convnext_tiny", "swin_tiny", "efficientnet_b0", "efficientnet_b1", "resnet18", "resnet50"],
     )
     parser.add_argument("--teacher-pretrained", action="store_true", default=True)
     parser.add_argument("--teacher-question-embed-dim", type=int, default=128)
@@ -146,29 +171,27 @@ def parse_args() -> argparse.Namespace:
 
     return parser.parse_args()
 
-def apply_student_defaults(args: argparse.Namespace) -> None:
+def normalize_student_variant(args: argparse.Namespace) -> None:
     """
-    Applies default architecture hyperparameters for each student size
-    unless explicitly overridden from command line.
+    Normalizes old/new CLI naming.
+
+    Preferred: --student-variant tdm_xxs/tdm_xs/tdm_s/tdm_m
+    Old alias: --student-size xxs/xs/s/m
     """
-    if args.student_size == "s":
-        if args.template_embed_dim is None:
-            args.template_embed_dim = 32
-        if args.fusion_hidden_dim is None:
-            args.fusion_hidden_dim = 192
-        if args.fusion_dropout is None:
-            args.fusion_dropout = 0.1
+    alias = {
+        "xxs": "tdm_xxs",
+        "xs": "tdm_xs",
+        "s": "tdm_s",
+        "m": "tdm_m",
+        "tdm_xxs": "tdm_xxs",
+        "tdm_xs": "tdm_xs",
+        "tdm_s": "tdm_s",
+        "tdm_m": "tdm_m",
+    }
 
-    elif args.student_size == "m":
-        if args.template_embed_dim is None:
-            args.template_embed_dim = 64
-        if args.fusion_hidden_dim is None:
-            args.fusion_hidden_dim = 384
-        if args.fusion_dropout is None:
-            args.fusion_dropout = 0.15
+    if args.student_size is not None:
+        args.student_variant = alias[args.student_size]
 
-    else:
-        raise ValueError(f"Unknown student size: {args.student_size}")
 
 def get_device(arg: str) -> torch.device:
     if arg == "cpu":
@@ -343,6 +366,36 @@ def kd_loss_fn(
     ) * (t * t)
 
 
+def forward_student(
+    student: nn.Module,
+    images: torch.Tensor,
+    question_tokens: torch.Tensor | None,
+    question_lengths: torch.Tensor | None,
+    question_template_ids: torch.Tensor,
+    edge_heads: Any | None,
+    args: argparse.Namespace,
+) -> torch.Tensor:
+    """
+    Single-head students ignore edge_heads.
+    Multi-head students need edge_heads so the correct task-specific head is used.
+    """
+    kwargs = {
+        "images": images,
+        "question_tokens": question_tokens,
+        "question_lengths": question_lengths,
+        "question_template_ids": question_template_ids,
+    }
+
+    if args.head_type == "multihead":
+        if edge_heads is None:
+            raise KeyError(
+                "Batch is missing edge_head, but --head-type multihead requires it."
+            )
+        kwargs["edge_heads"] = edge_heads
+
+    return student(**kwargs)
+
+
 @torch.no_grad()
 def evaluate_student(
     model: nn.Module,
@@ -367,11 +420,14 @@ def evaluate_student(
         question_template_ids = batch["question_template_id"].to(device, non_blocking=True)
         targets = batch["target"].to(device, non_blocking=True)
 
-        logits = model(
+        logits = forward_student(
+            student=model,
             images=images,
             question_tokens=question_tokens,
             question_lengths=question_lengths,
             question_template_ids=question_template_ids,
+            edge_heads=batch.get("edge_head"),
+            args=getattr(model, "_train_args", argparse.Namespace(head_type="single")),
         )
 
         loss = criterion(logits, targets)
@@ -423,11 +479,14 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         with autocast_context(device, args.amp):
-            student_logits = student(
+            student_logits = forward_student(
+                student=student,
                 images=images,
                 question_tokens=question_tokens,
                 question_lengths=question_lengths,
                 question_template_ids=question_template_ids,
+                edge_heads=batch.get("edge_head"),
+                args=args,
             )
 
             ce_loss = ce_criterion(student_logits, targets)
@@ -505,7 +564,7 @@ def train_one_epoch(
 
 def main() -> None:
     args = parse_args()
-    apply_student_defaults(args)
+    normalize_student_variant(args)
     set_seed(args.seed)
 
     device = get_device(args.device)
@@ -513,7 +572,7 @@ def main() -> None:
     if args.mode == "kd" and args.teacher_checkpoint is None:
         raise ValueError("--teacher-checkpoint is required for --mode kd")
 
-    run_prefix = f"tdm_{args.student_size}_{args.mode}"
+    run_prefix = f"{args.student_variant}_{args.head_type}_{args.mode}"
     run_dir = make_run_dir(
         base_dir=args.runs_dir,
         run_name=args.run_name,
@@ -531,11 +590,12 @@ def main() -> None:
     save_json(config, run_dir / "config.json")
 
     print("=" * 80)
-    print("TinyDisasterVQA / Train TDM-S Student")
+    print("TinyDisasterVQA / Train TDM Student")
     print("=" * 80)
     print(f"Run dir:       {run_dir}")
     print(f"Device:        {device}")
-    print(f"Student size:  TDM-{args.student_size.upper()}")
+    print(f"Student:       {args.student_variant}")
+    print(f"Head type:     {args.head_type}")
     print(f"Mode:          {args.mode}")
     print(f"AMP:           {args.amp}")
     print(f"Batch size:    {args.batch_size}")
@@ -549,28 +609,21 @@ def main() -> None:
     metadata = load_json(args.metadata)
     loaders = build_loaders(args)
 
-    if args.student_size == "s":
-        student = build_tdm_s_from_metadata(
-            metadata=metadata,
-            num_classes=args.num_classes,
-            num_question_templates=args.num_question_templates,
-            question_template_embed_dim=args.template_embed_dim,
-            fusion_hidden_dim=args.fusion_hidden_dim,
-            fusion_dropout=args.fusion_dropout,
-        ).to(device)
+    student = build_tdm_from_metadata(
+        metadata=metadata,
+        variant=args.student_variant,
+        num_classes=args.num_classes,
+        num_question_templates=args.num_question_templates,
+        question_template_embed_dim=args.template_embed_dim,
+        fusion_hidden_dim=args.fusion_hidden_dim,
+        fusion_dropout=args.fusion_dropout,
+        fusion_layers=args.fusion_layers,
+        head_type=args.head_type,
+    ).to(device)
 
-    elif args.student_size == "m":
-        student = build_tdm_m_from_metadata(
-            metadata=metadata,
-            num_classes=args.num_classes,
-            num_question_templates=args.num_question_templates,
-            question_template_embed_dim=args.template_embed_dim,
-            fusion_hidden_dim=args.fusion_hidden_dim,
-            fusion_dropout=args.fusion_dropout,
-        ).to(device)
-
-    else:
-        raise ValueError(f"Unknown student size: {args.student_size}")
+    # Store the head type on the model so evaluate_student can select the right
+    # forward path without changing its call signature too much.
+    student._train_args = argparse.Namespace(head_type=args.head_type)
 
     print(describe_model(student))
     print()
