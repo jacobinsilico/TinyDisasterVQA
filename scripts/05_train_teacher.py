@@ -5,7 +5,7 @@
 Train the TinyDisasterVQA teacher model.
 
 Default:
-  ConvNeXt-Tiny image encoder
+  ConvNeXt-Tiny or Swin-Tiny image encoder
   LSTM question encoder
   19-class edge_global classifier
 
@@ -98,6 +98,12 @@ def parse_args() -> argparse.Namespace:
     # Data.
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument(
+        "--eval-batch-size",
+        type=int,
+        default=None,
+        help="Optional separate batch size for valid/test. Defaults to --batch-size.",
+    )
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--augment-train", action="store_true", default=True)
     parser.add_argument("--no-augment-train", action="store_false", dest="augment_train")
@@ -108,7 +114,14 @@ def parse_args() -> argparse.Namespace:
         "--backbone",
         type=str,
         default="convnext_tiny",
-        choices=["convnext_tiny", "efficientnet_b0", "efficientnet_b1", "resnet18", "resnet50"],
+        choices=[
+            "convnext_tiny",
+            "swin_tiny",
+            "efficientnet_b0",
+            "efficientnet_b1",
+            "resnet18",
+            "resnet50",
+        ],
     )
     parser.add_argument("--pretrained", action="store_true", default=True)
     parser.add_argument("--no-pretrained", action="store_false", dest="pretrained")
@@ -200,32 +213,36 @@ def build_loaders(args: argparse.Namespace) -> dict[str, DataLoader]:
         print(f"Overfit mode enabled: using first {n} training samples for train/valid/test.")
 
     pin_memory = torch.cuda.is_available()
+    eval_batch_size = args.eval_batch_size or args.batch_size
+
+    train_loader_kwargs = {
+        "batch_size": args.batch_size,
+        "shuffle": True,
+        "num_workers": args.num_workers,
+        "pin_memory": pin_memory,
+        "drop_last": False,
+    }
+
+    eval_loader_kwargs = {
+        "batch_size": eval_batch_size,
+        "shuffle": False,
+        "num_workers": args.num_workers,
+        "pin_memory": pin_memory,
+        "drop_last": False,
+    }
+
+    # Safe speedup for Colab/WSL when using worker processes.
+    # DataLoader rejects persistent_workers/prefetch_factor when num_workers == 0.
+    if args.num_workers > 0:
+        train_loader_kwargs["persistent_workers"] = True
+        train_loader_kwargs["prefetch_factor"] = 2
+        eval_loader_kwargs["persistent_workers"] = True
+        eval_loader_kwargs["prefetch_factor"] = 2
 
     return {
-        "train": DataLoader(
-            train_dataset,
-            batch_size=args.batch_size,
-            shuffle=True,
-            num_workers=args.num_workers,
-            pin_memory=pin_memory,
-            drop_last=False,
-        ),
-        "valid": DataLoader(
-            valid_dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.num_workers,
-            pin_memory=pin_memory,
-            drop_last=False,
-        ),
-        "test": DataLoader(
-            test_dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.num_workers,
-            pin_memory=pin_memory,
-            drop_last=False,
-        ),
+        "train": DataLoader(train_dataset, **train_loader_kwargs),
+        "valid": DataLoader(valid_dataset, **eval_loader_kwargs),
+        "test": DataLoader(test_dataset, **eval_loader_kwargs),
     }
 
 
@@ -340,10 +357,21 @@ def main() -> None:
 
     device = get_device(args.device)
 
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+
+    class_weight_tag = "_cw" if args.use_class_weights else ""
+    aug_tag = "" if args.augment_train else "_noaug"
+    pretrained_tag = "" if args.pretrained else "_scratch"
+    run_prefix = (
+        f"teacher_{args.backbone}_{args.image_size}"
+        f"{class_weight_tag}{aug_tag}{pretrained_tag}"
+    )
+
     run_dir = make_run_dir(
         base_dir=args.runs_dir,
         run_name=args.run_name,
-        prefix=f"teacher_{args.backbone}",
+        prefix=run_prefix,
     )
 
     checkpoints_dir = run_dir / "checkpoints"
@@ -364,10 +392,14 @@ def main() -> None:
     print(f"Backbone:      {args.backbone}")
     print(f"Pretrained:    {args.pretrained}")
     print(f"AMP:           {args.amp}")
+    print(f"Image size:    {args.image_size}")
     print(f"Batch size:    {args.batch_size}")
+    print(f"Eval batch:    {args.eval_batch_size or args.batch_size}")
+    print(f"Augment train: {args.augment_train}")
     print(f"Epochs:        {args.epochs}")
     print(f"LR:            {args.lr}")
     print(f"Class weights: {args.use_class_weights}")
+    print(f"Freeze image:  {args.freeze_image_encoder}")
     print()
 
     metadata = load_json(args.metadata)

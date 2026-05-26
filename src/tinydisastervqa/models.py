@@ -22,6 +22,7 @@ from torchvision import models
 
 ImageBackboneName = Literal[
     "convnext_tiny",
+    "swin_tiny",
     "efficientnet_b0",
     "efficientnet_b1",
     "resnet18",
@@ -80,6 +81,19 @@ class TorchvisionImageEncoder(nn.Module):
                 model.avgpool,
                 model.classifier[0],
                 model.classifier[1],
+            )
+
+        elif backbone_name == "swin_tiny":
+            weights = models.Swin_T_Weights.DEFAULT if pretrained else None
+            model = models.swin_t(weights=weights)
+
+            self.feature_dim = model.head.in_features
+            self.encoder = nn.Sequential(
+                model.features,
+                model.norm,
+                model.permute,
+                model.avgpool,
+                nn.Flatten(1),
             )
 
         elif backbone_name == "efficientnet_b0":
