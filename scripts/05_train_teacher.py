@@ -131,6 +131,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fusion-hidden-dim", type=int, default=512)
     parser.add_argument("--fusion-dropout", type=float, default=0.3)
     parser.add_argument("--num-classes", type=int, default=19)
+    parser.add_argument("--early-stopping-patience", type=int, default=0)
+    parser.add_argument("--early-stopping-min-delta", type=float, default=0.0)
 
     # Optimization.
     parser.add_argument("--epochs", type=int, default=20)
@@ -441,6 +443,8 @@ def main() -> None:
 
     best_valid_acc = -1.0
     best_epoch = -1
+    epochs_without_improvement = 0
+    completed_epoch = 0
 
     metrics_path = run_dir / "metrics.jsonl"
 
@@ -477,7 +481,9 @@ def main() -> None:
         valid_acc = float(valid_metrics["overall"]["accuracy"])
         train_acc = float(train_metrics["overall"]["accuracy"])
 
-        improved = valid_acc > best_valid_acc
+        completed_epoch = epoch
+
+        improved = valid_acc > (best_valid_acc + args.early_stopping_min_delta)
 
         if improved:
             best_valid_acc = valid_acc
@@ -496,6 +502,11 @@ def main() -> None:
                 },
                 config=config,
             )
+
+        if improved:
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
 
         if args.save_every_epoch:
             save_checkpoint(
@@ -522,6 +533,9 @@ def main() -> None:
             "best_valid_acc": best_valid_acc,
             "best_epoch": best_epoch,
             "epoch_time_sec": time.time() - epoch_start,
+            "epochs_without_improvement": epochs_without_improvement,
+            "early_stopping_patience": args.early_stopping_patience,
+            "early_stopping_min_delta": args.early_stopping_min_delta,
         }
 
         append_jsonl(epoch_record, metrics_path)
@@ -538,6 +552,20 @@ def main() -> None:
             f"best_valid_acc={best_valid_acc:.4f} at epoch {best_epoch} | "
             f"{'IMPROVED' if improved else 'no improvement'}"
         )
+
+        if (
+            args.early_stopping_patience > 0
+            and epochs_without_improvement >= args.early_stopping_patience
+        ):
+            print()
+            print("=" * 80)
+            print(
+                f"Early stopping triggered after {epochs_without_improvement} "
+                f"epochs without validation improvement."
+            )
+            print(f"Best valid acc: {best_valid_acc:.4f} at epoch {best_epoch}")
+            print("=" * 80)
+            break
 
     print()
     print("=" * 80)
@@ -561,7 +589,7 @@ def main() -> None:
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
-        epoch=args.epochs,
+        epoch=completed_epoch,
         metrics={
             "test": test_metrics,
             "best_valid_acc": best_valid_acc,
