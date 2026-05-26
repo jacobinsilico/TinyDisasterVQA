@@ -673,8 +673,11 @@ class MultiHeadGlobalClassifier(nn.Module):
 
         hidden = self.trunk(fused)
 
-        logits = fused.new_full(
-            (fused.size(0), self.num_classes),
+        # Use hidden.new_full rather than fused.new_full because AMP may make
+        # the classifier/trunk output float16 while fused remains float32.
+        # The destination tensor must match the dtype of each head output.
+        logits = hidden.new_full(
+            (hidden.size(0), self.num_classes),
             fill_value=-1.0e4,
         )
 
