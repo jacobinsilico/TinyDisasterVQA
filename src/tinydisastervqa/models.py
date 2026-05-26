@@ -532,6 +532,88 @@ class TDMSVQA(nn.Module):
 
         return logits
 
+@dataclass
+class TDMMConfig:
+    """
+    TDM-M = TinyDisasterModel Medium.
+
+    Design goal:
+      - medium student
+      - still no LSTM
+      - question_template_id embedding
+      - larger depthwise-separable CNN than TDM-S
+      - 19-class edge_global output
+
+    Target:
+      - better count/density performance than TDM-S
+      - still small enough for embedded deployment
+    """
+
+    num_question_templates: int = 31
+    question_template_embed_dim: int = 64
+
+    image_channels: tuple[int, int, int, int, int] = (32, 64, 128, 192, 256)
+    image_feature_dim: int = 256
+
+    fusion_hidden_dim: int = 384
+    fusion_dropout: float = 0.15
+
+    num_classes: int = 19
+
+
+class TDMMVQA(nn.Module):
+    """
+    TDM-M student model.
+
+    Same basic design as TDM-S, but wider:
+      - larger CNN channels
+      - larger template embedding
+      - larger fusion MLP
+    """
+
+    def __init__(self, config: TDMMConfig) -> None:
+        super().__init__()
+
+        self.config = config
+
+        self.image_encoder = TinyCNNImageEncoder(
+            channels=config.image_channels,
+        )
+
+        self.question_encoder = TemplateQuestionEncoder(
+            num_question_templates=config.num_question_templates,
+            embed_dim=config.question_template_embed_dim,
+        )
+
+        fusion_dim = self.image_encoder.feature_dim + self.question_encoder.output_dim
+
+        self.classifier = nn.Sequential(
+            nn.Linear(fusion_dim, config.fusion_hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(config.fusion_dropout),
+            nn.Linear(config.fusion_hidden_dim, config.fusion_hidden_dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Dropout(config.fusion_dropout),
+            nn.Linear(config.fusion_hidden_dim // 2, config.num_classes),
+        )
+
+    def forward(
+        self,
+        images: torch.Tensor,
+        question_tokens: torch.Tensor | None = None,
+        question_lengths: torch.Tensor | None = None,
+        question_template_ids: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if question_template_ids is None:
+            raise ValueError("TDMMVQA requires question_template_ids.")
+
+        image_features = self.image_encoder(images)
+        question_features = self.question_encoder(question_template_ids)
+
+        fused = torch.cat([image_features, question_features], dim=1)
+        logits = self.classifier(fused)
+
+        return logits
 
 def build_tdm_s_from_metadata(
     metadata: dict,
@@ -558,6 +640,28 @@ def build_tdm_s_from_metadata(
 
     return TDMSVQA(config)
 
+def build_tdm_m_from_metadata(
+    metadata: dict,
+    num_classes: int = 19,
+    num_question_templates: int = 31,
+    question_template_embed_dim: int = 64,
+    fusion_hidden_dim: int = 384,
+    fusion_dropout: float = 0.15,
+) -> TDMMVQA:
+    """
+    Convenience builder for TDM-M.
+    """
+    _ = metadata
+
+    config = TDMMConfig(
+        num_question_templates=num_question_templates,
+        question_template_embed_dim=question_template_embed_dim,
+        fusion_hidden_dim=fusion_hidden_dim,
+        fusion_dropout=fusion_dropout,
+        num_classes=num_classes,
+    )
+
+    return TDMMVQA(config)
 
 # =============================================================================
 # Shared model utilities
@@ -611,6 +715,14 @@ def describe_model(model: nn.Module) -> str:
 
     if isinstance(model, TDMSVQA):
         lines.append("Student variant:   TDM-S")
+        lines.append(f"Image channels:    {model.config.image_channels}")
+        lines.append(f"Image feature dim: {model.image_encoder.feature_dim}")
+        lines.append(f"Template emb dim:  {model.question_encoder.output_dim}")
+        lines.append(f"Fusion hidden dim: {model.config.fusion_hidden_dim}")
+        lines.append(f"Num classes:       {model.config.num_classes}")
+
+    if isinstance(model, TDMMVQA):
+        lines.append("Student variant:   TDM-M")
         lines.append(f"Image channels:    {model.config.image_channels}")
         lines.append(f"Image feature dim: {model.image_encoder.feature_dim}")
         lines.append(f"Template emb dim:  {model.question_encoder.output_dim}")
