@@ -313,5 +313,12 @@ To verify functional execution across frameworks, a single sample was isolated a
     year={2021}
   }
   ```
-- **TinyVQA Baseline:**
-  *Course reference: Machine Learning on Microcontrollers.*
+- **TinyVQA Baseline Reference:**
+  ```bibtex
+  @inproceedings{alrashid2024tinyvqa,
+    title={TinyVQA: Compact Multimodal Deep Neural Network for Visual Question Answering on Resource-Constrained Hardware},
+    author={Al Rashid, Hasib and Sarkar, Argho and Gangopadhyay, Aryya and Rahnemoonfar, Maryam and Mohsenin, Tinoosh},
+    booktitle={Proceedings of the tinyML Research Symposium},
+    year={2024}
+  }
+  ```
