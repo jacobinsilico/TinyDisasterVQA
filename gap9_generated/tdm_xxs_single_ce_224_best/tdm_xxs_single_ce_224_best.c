@@ -127,11 +127,11 @@ GPIO_LOW();
     printf("Runner completed: %d\n", iteration);
 
     int pred_idx = 0;
-    int pred_val = ((signed char *)Output_1)[0];
+    int pred_val = ((unsigned char *)Output_1)[0];
 
-    printf("Output logits/int8:");
+    printf("Output logits/uint8:");
     for (int i = 0; i < 19; i++) {
-        int v = ((signed char *)Output_1)[i];
+        int v = ((unsigned char *)Output_1)[i];
         printf(" %d", v);
         if (v > pred_val) {
             pred_val = v;
