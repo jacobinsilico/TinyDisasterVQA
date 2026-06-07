@@ -304,8 +304,8 @@ def main() -> None:
     res = G.execute_on_target(
         directory=str(args.output_dir),
         finput_tensors=first_inputs,
-        output_tensors=1,
-        print_output=True,
+        #output_tensors=1,
+        print_output=False,
         settings=model_settings(
             tensor_directory="tensors",
             model_directory="at_model",
@@ -317,7 +317,7 @@ def main() -> None:
             privileged_l3_flash_size=args.privileged_l3_flash_size,
 
             graph_size_opt=2,
-            graph_dump_tensor_to_file=True,
+            graph_dump_tensor_to_file=False,
             graph_const_exec_from_flash=True,
             graph_l1_promotion=2,
         ),
