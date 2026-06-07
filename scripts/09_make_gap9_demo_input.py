@@ -116,7 +116,13 @@ def main():
     qtid_np = np.array([int(row["question_template_id"])], dtype=np.int64)
 
     # Write GAP9 input binaries.
-    (args.output_dir / "Input_1.bin").write_bytes(image_np.tobytes())
+    input_scale = 0.01865844801068306
+    input_zero_point = 114
+
+    image_q = np.round(image_np / input_scale + input_zero_point)
+    image_q = np.clip(image_q, 0, 255).astype(np.uint8)
+
+    (args.output_dir / "Input_1.bin").write_bytes(image_q.tobytes())
     (args.output_dir / "Input_2.bin").write_bytes(qtid_np.tobytes())
 
     metadata = load_json(args.metadata)
