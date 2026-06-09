@@ -5,16 +5,20 @@ Evaluation metrics for TinyDisasterVQA.
 
 Supports:
   - overall accuracy
+  - macro / balanced class accuracy over observed classes
   - per-edge-head accuracy
   - per-question-type accuracy
-  - class accuracy
+  - per-class accuracy
   - confusion matrix
+  - optional count exact and count ±1 accuracy when label_to_class is provided
 
 Compatible with:
   - teacher models using question_tokens/question_lengths
+  - teacher models using question_template_id
+  - teacher models returning either logits tensor or {"logits": ..., ...}
   - student models using question_template_id
   - single-head students returning global logits [B, num_classes]
-  - multi-head students returning global logits [B, num_classes]
+  - backward-compatible multi-head students returning global logits [B, num_classes]
 """
 
 from __future__ import annotations
@@ -44,6 +48,10 @@ class AccuracyMeter:
 
         self.correct += int((preds == targets).sum().item())
         self.total += int(targets.numel())
+
+    def update_bool(self, correct: bool) -> None:
+        self.correct += int(bool(correct))
+        self.total += 1
 
     @property
     def accuracy(self) -> float:
@@ -84,6 +92,7 @@ def _normalize_group_sequence(groups: Any, expected_len: int | None = None) -> l
         values = [groups]
 
     normalized: list[str] = []
+
     for value in values:
         if isinstance(value, torch.Tensor):
             if value.ndim == 0:
@@ -92,7 +101,6 @@ def _normalize_group_sequence(groups: Any, expected_len: int | None = None) -> l
                 value = value.detach().cpu().view(-1).tolist()
 
         if isinstance(value, list):
-            # Flatten one level if a collate function produced nested tensors/lists.
             for inner in value:
                 if isinstance(inner, bytes):
                     inner = inner.decode("utf-8")
@@ -113,6 +121,21 @@ def _normalize_group_sequence(groups: Any, expected_len: int | None = None) -> l
     return normalized
 
 
+def _extract_logits(outputs: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
+    """
+    Accept either raw logits or model output dictionaries.
+    """
+    if isinstance(outputs, torch.Tensor):
+        return outputs
+
+    if isinstance(outputs, dict):
+        if "logits" not in outputs:
+            raise KeyError("Model output dict must contain key 'logits'.")
+        return outputs["logits"]
+
+    raise TypeError(f"Expected tensor or dict output, got {type(outputs)}.")
+
+
 def _validate_logits_and_targets(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -130,6 +153,7 @@ def _validate_logits_and_targets(
         )
 
     targets = targets.view(-1)
+
     if logits.size(0) != targets.size(0):
         raise ValueError(
             f"Batch size mismatch: logits batch={logits.size(0)}, "
@@ -137,6 +161,34 @@ def _validate_logits_and_targets(
         )
 
     return logits, targets
+
+
+def _parse_count_class(edge_class: str | None) -> int | None:
+    """
+    Parse labels like:
+      count:1  -> 1
+      count:5+ -> None
+
+    Bucket classes like 5+ / 10+ do not have an exact scalar value.
+    """
+    if edge_class is None:
+        return None
+
+    edge_class = str(edge_class)
+
+    if not edge_class.startswith("count:"):
+        return None
+
+    answer = edge_class.split(":", maxsplit=1)[1]
+
+    if answer.isdigit():
+        return int(answer)
+
+    return None
+
+
+def _is_count_class(edge_class: str | None) -> bool:
+    return edge_class is not None and str(edge_class).startswith("count:")
 
 
 @dataclass
@@ -147,15 +199,21 @@ class ClassificationMetrics:
     Works for:
       - edge_global teacher training
       - single-head student training
-      - multi-head student training, as long as the model returns global logits
-        with shape [B, num_classes]
+      - backward-compatible multi-head student training, as long as the model
+        returns global logits with shape [B, num_classes]
     """
 
     num_classes: int
+    label_to_class: dict[str, str] | None = None
+
     overall: AccuracyMeter = field(default_factory=AccuracyMeter)
     by_head: dict[str, AccuracyMeter] = field(default_factory=lambda: defaultdict(AccuracyMeter))
     by_question_type: dict[str, AccuracyMeter] = field(default_factory=lambda: defaultdict(AccuracyMeter))
     by_class: dict[int, AccuracyMeter] = field(default_factory=lambda: defaultdict(AccuracyMeter))
+
+    count_exact: AccuracyMeter = field(default_factory=AccuracyMeter)
+    count_pm1: AccuracyMeter = field(default_factory=AccuracyMeter)
+
     confusion: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
@@ -163,6 +221,12 @@ class ClassificationMetrics:
             (self.num_classes, self.num_classes),
             dtype=torch.long,
         )
+
+        if self.label_to_class is not None:
+            self.label_to_class = {
+                str(k): str(v)
+                for k, v in self.label_to_class.items()
+            }
 
     @torch.no_grad()
     def update(
@@ -200,8 +264,28 @@ class ClassificationMetrics:
                 torch.tensor([target_i]),
             )
 
+            if self.label_to_class is not None:
+                target_class = self.label_to_class.get(str(target_i))
+                pred_class = self.label_to_class.get(str(pred_i))
+
+                if _is_count_class(target_class):
+                    exact_correct = pred_i == target_i
+                    self.count_exact.update_bool(exact_correct)
+
+                    target_count = _parse_count_class(target_class)
+                    pred_count = _parse_count_class(pred_class)
+
+                    if target_count is not None and pred_count is not None:
+                        pm1_correct = abs(pred_count - target_count) <= 1
+                    else:
+                        # For bucket labels like count:5+, require exact bucket match.
+                        pm1_correct = exact_correct
+
+                    self.count_pm1.update_bool(pm1_correct)
+
         if edge_heads is not None:
             edge_heads_list = _normalize_group_sequence(edge_heads, expected_len=batch_size)
+
             for i, head in enumerate(edge_heads_list):
                 self.by_head[head].update(
                     preds_cpu[i : i + 1],
@@ -210,6 +294,7 @@ class ClassificationMetrics:
 
         if question_types is not None:
             question_types_list = _normalize_group_sequence(question_types, expected_len=batch_size)
+
             for i, question_type in enumerate(question_types_list):
                 self.by_question_type[question_type].update(
                     preds_cpu[i : i + 1],
@@ -217,8 +302,26 @@ class ClassificationMetrics:
                 )
 
     def compute(self) -> dict[str, Any]:
-        return {
+        by_class = {
+            str(key): meter.to_dict()
+            for key, meter in sorted(self.by_class.items())
+        }
+
+        observed_class_accuracies = [
+            values["accuracy"]
+            for values in by_class.values()
+            if values["total"] > 0
+        ]
+
+        macro_accuracy = (
+            sum(observed_class_accuracies) / len(observed_class_accuracies)
+            if observed_class_accuracies
+            else 0.0
+        )
+
+        result = {
             "overall": self.overall.to_dict(),
+            "macro_accuracy": macro_accuracy,
             "by_head": {
                 key: meter.to_dict()
                 for key, meter in sorted(self.by_head.items())
@@ -227,17 +330,26 @@ class ClassificationMetrics:
                 key: meter.to_dict()
                 for key, meter in sorted(self.by_question_type.items())
             },
-            "by_class": {
-                str(key): meter.to_dict()
-                for key, meter in sorted(self.by_class.items())
-            },
+            "by_class": by_class,
             "confusion_matrix": self.confusion.tolist()
             if self.confusion is not None
             else None,
         }
 
+        if self.label_to_class is not None:
+            result["count_exact"] = self.count_exact.to_dict()
+            result["count_pm1"] = self.count_pm1.to_dict()
+
+        return result
+
 
 def accuracy_from_logits(logits: torch.Tensor, targets: torch.Tensor) -> float:
+    logits, targets = _validate_logits_and_targets(
+        logits=logits,
+        targets=targets,
+        num_classes=logits.size(1),
+    )
+
     preds = logits.argmax(dim=1)
     return float((preds == targets).float().mean().item())
 
@@ -250,7 +362,13 @@ def topk_accuracy_from_logits(
     """
     Computes top-k accuracy for classification.
     """
-    max_k = max(topk)
+    logits, targets = _validate_logits_and_targets(
+        logits=logits,
+        targets=targets,
+        num_classes=logits.size(1),
+    )
+
+    max_k = min(max(topk), logits.size(1))
 
     _, pred = logits.topk(max_k, dim=1)
     pred = pred.t()
@@ -259,7 +377,8 @@ def topk_accuracy_from_logits(
     results = {}
 
     for k in topk:
-        correct_k = correct[:k].reshape(-1).float().sum(0)
+        k_eff = min(k, logits.size(1))
+        correct_k = correct[:k_eff].reshape(-1).float().sum(0)
         results[f"top{k}"] = float((correct_k / targets.numel()).item())
 
     return results
@@ -333,6 +452,25 @@ def format_metrics(metrics: dict[str, Any], prefix: str = "") -> str:
         f"({overall['correct']}/{overall['total']})"
     )
 
+    if "macro_accuracy" in metrics:
+        lines.append(f"{name}macro acc: {metrics['macro_accuracy']:.4f}")
+
+    if "count_exact" in metrics:
+        count_exact = metrics["count_exact"]
+        lines.append(
+            f"{name}count exact: "
+            f"acc={count_exact['accuracy']:.4f} "
+            f"({count_exact['correct']}/{count_exact['total']})"
+        )
+
+    if "count_pm1" in metrics:
+        count_pm1 = metrics["count_pm1"]
+        lines.append(
+            f"{name}count ±1: "
+            f"acc={count_pm1['accuracy']:.4f} "
+            f"({count_pm1['correct']}/{count_pm1['total']})"
+        )
+
     if "by_head" in metrics and metrics["by_head"]:
         lines.append(f"{name}by edge head:")
         for head, values in metrics["by_head"].items():
@@ -363,12 +501,12 @@ def _forward_model_for_eval(
     Flexible eval forward pass.
 
     Teacher forward usually accepts:
-      images, question_tokens, question_lengths
+      images, question_tokens, question_lengths, question_template_ids, return_aux
 
     Student forward usually accepts:
       images, question_tokens, question_lengths, question_template_ids
 
-    Multi-head student additionally accepts:
+    Backward-compatible multi-head student additionally accepts:
       edge_heads or edge_head_ids
     """
     forward_sig = inspect.signature(model.forward)
@@ -388,13 +526,29 @@ def _forward_model_for_eval(
         kwargs["question_template_ids"] = batch["question_template_id"].to(device, non_blocking=True)
 
     if "edge_heads" in params and "edge_head" in batch:
-        # Keep string edge_head metadata on CPU/list form; the model handles it.
         kwargs["edge_heads"] = batch["edge_head"]
 
-    if "edge_head_ids" in params and "edge_head_id" in batch:
-        kwargs["edge_head_ids"] = batch["edge_head_id"].to(device, non_blocking=True)
+    if "edge_head_ids" in params:
+        if "edge_head_id" in batch:
+            kwargs["edge_head_ids"] = batch["edge_head_id"].to(device, non_blocking=True)
+        elif "head_id" in batch:
+            kwargs["edge_head_ids"] = batch["head_id"].to(device, non_blocking=True)
 
-    return model(**kwargs)
+    if "return_aux" in params:
+        kwargs["return_aux"] = False
+
+    outputs = model(**kwargs)
+    return _extract_logits(outputs)
+
+
+def _get_targets_from_batch(batch: dict[str, Any], device: torch.device) -> torch.Tensor:
+    if "target" in batch:
+        return batch["target"].to(device, non_blocking=True)
+
+    if "target_edge_global" in batch:
+        return batch["target_edge_global"].to(device, non_blocking=True)
+
+    raise KeyError("Batch must contain either 'target' or 'target_edge_global'.")
 
 
 @torch.no_grad()
@@ -404,25 +558,29 @@ def evaluate_classifier(
     device: torch.device,
     num_classes: int,
     criterion: torch.nn.Module | None = None,
+    label_to_class: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     Generic evaluator for models returning global logits [B, num_classes].
 
-    Compatible with teacher, single-head student, and multi-head student models.
-    For multi-head students, the dataloader batch must contain edge_head or
-    edge_head_id so the model can select the correct task-specific head.
+    Compatible with teacher, single-head student, and backward-compatible
+    multi-head student models.
     """
     model.eval()
 
-    meter = ClassificationMetrics(num_classes=num_classes)
+    meter = ClassificationMetrics(
+        num_classes=num_classes,
+        label_to_class=label_to_class,
+    )
 
     total_loss = 0.0
     total_samples = 0
+
     if criterion is None:
         criterion = torch.nn.CrossEntropyLoss()
 
     for batch in dataloader:
-        targets = batch["target"].to(device, non_blocking=True)
+        targets = _get_targets_from_batch(batch, device=device)
 
         logits = _forward_model_for_eval(
             model=model,
@@ -445,7 +603,7 @@ def evaluate_classifier(
         meter.update(
             logits=logits,
             targets=targets,
-            edge_heads=batch.get("edge_head", batch.get("edge_head_id")),
+            edge_heads=batch.get("edge_head", batch.get("edge_head_id", batch.get("head_id"))),
             question_types=batch.get("question_type"),
         )
 
