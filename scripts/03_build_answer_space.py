@@ -4,6 +4,25 @@
 
 Builds final answer-space metadata for TinyDisasterVQA training.
 
+Current submission formulation:
+  Main target is a compact single-head edge_global classifier.
+
+  For count_cap=5:
+    binary:    no / yes
+    condition: flooded / mixed / non_flooded
+    density:   low / moderate / high
+    count:     1 / 2 / 3 / 4 / 5 / 5+
+
+    => 14 global classes
+
+  For count_cap=10:
+    binary:    no / yes
+    condition: flooded / mixed / non_flooded
+    density:   low / moderate / high
+    count:     1 / ... / 10 / 10+
+
+    => 19 global classes
+
 Input:
   outputs/processed/floodnet_manifest.csv
 
@@ -14,8 +33,10 @@ Outputs:
     edge_head_counts.csv
     edge_head_label_counts.csv
     original_answer_counts.csv
-    class_weights_edge_global.json
-    class_weights_by_head.json
+    class_weights_edge_global_by_class.json
+    class_weights_edge_global_by_label.json
+    class_weights_by_head_by_answer.json
+    class_weights_by_head_by_label.json
     answer_space_summary.txt
 
 This script does not modify the dataset or manifest.
@@ -50,7 +71,7 @@ def normalize_weights(counts: dict[str, int], mode: str = "inverse_sqrt") -> dic
     inverse_sqrt:
       w_c = 1 / sqrt(count_c)
 
-    Then normalize weights to have mean 1.
+    Then normalizes weights to have mean 1.
     """
     if not counts:
         return {}
@@ -68,7 +89,14 @@ def normalize_weights(counts: dict[str, int], mode: str = "inverse_sqrt") -> dic
             raise ValueError(f"Unknown weight mode: {mode}")
 
     mean_weight = sum(raw.values()) / len(raw)
-    return {label: weight / mean_weight for label, weight in raw.items()}
+
+    if mean_weight <= 0:
+        raise ValueError("Mean class weight must be positive.")
+
+    return {
+        label: weight / mean_weight
+        for label, weight in raw.items()
+    }
 
 
 def check_required_columns(df: pd.DataFrame) -> None:
@@ -117,7 +145,9 @@ def build_edge_global_maps(df: pd.DataFrame) -> tuple[dict[str, int], dict[str, 
     return edge_class_to_label, edge_label_to_class
 
 
-def build_head_maps(df: pd.DataFrame) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, str]]]:
+def build_head_maps(
+    df: pd.DataFrame,
+) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, str]]]:
     head_label_maps: dict[str, dict[str, int]] = {}
     head_idx_to_answer: dict[str, dict[str, str]] = {}
 
@@ -182,8 +212,41 @@ def split_set(df: pd.DataFrame, split: str, column: str) -> set[str]:
     return set(df[df["split"] == split][column].astype(str).unique())
 
 
+def infer_count_cap(edge_class_to_label: dict[str, int]) -> int | None:
+    """
+    Infers count cap from classes like count:5+ or count:10+.
+    """
+    caps = []
+
+    for edge_class in edge_class_to_label:
+        if not edge_class.startswith("count:"):
+            continue
+
+        answer = edge_class.split(":", maxsplit=1)[1]
+
+        if answer.endswith("+") and answer[:-1].isdigit():
+            caps.append(int(answer[:-1]))
+
+    if not caps:
+        return None
+
+    if len(set(caps)) != 1:
+        raise ValueError(f"Found inconsistent count caps: {sorted(set(caps))}")
+
+    return caps[0]
+
+
+def expected_num_classes_from_cap(count_cap: int | None) -> int | None:
+    if count_cap is None:
+        return None
+
+    # binary 2 + condition 3 + density 3 + count_cap exact counts + cap bucket
+    return 2 + 3 + 3 + count_cap + 1
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
+
     parser.add_argument(
         "--manifest",
         type=Path,
@@ -203,6 +266,7 @@ def main() -> None:
         choices=["inverse", "inverse_sqrt"],
         help="Class weighting strategy.",
     )
+
     args = parser.parse_args()
 
     output_dir = args.output_dir
@@ -225,6 +289,15 @@ def main() -> None:
     edge_class_to_label, edge_label_to_class = build_edge_global_maps(df)
     head_label_maps, head_idx_to_answer = build_head_maps(df)
     original_answer_to_label, original_label_to_answer = build_original_maps(df)
+
+    count_cap = infer_count_cap(edge_class_to_label)
+    expected_num_classes = expected_num_classes_from_cap(count_cap)
+
+    if expected_num_classes is not None and len(edge_class_to_label) != expected_num_classes:
+        raise ValueError(
+            f"Unexpected edge_global class count for count_cap={count_cap}: "
+            f"expected {expected_num_classes}, got {len(edge_class_to_label)}."
+        )
 
     # Counts.
     edge_class_counts = (
@@ -270,21 +343,28 @@ def main() -> None:
         .to_dict()
     )
 
+    missing_train_classes = sorted(set(edge_class_to_label) - set(train_edge_counts))
+
+    if missing_train_classes:
+        raise ValueError(
+            "Some edge_global classes are not present in train split. "
+            f"Cannot build stable CE weights: {missing_train_classes}"
+        )
+
     class_weights_edge_global_by_class = normalize_weights(
         {str(k): int(v) for k, v in train_edge_counts.items()},
         mode=args.weight_mode,
     )
 
-    # Convert class-name weights to index-ordered weights.
     class_weights_edge_global_by_label = {
-        str(edge_class_to_label[edge_class]): class_weights_edge_global_by_class[edge_class]
+        str(edge_class_to_label[edge_class]): float(class_weights_edge_global_by_class[edge_class])
         for edge_class in edge_class_to_label
     }
 
-    class_weights_by_head: dict[str, dict[str, float]] = {}
-    class_weights_by_head_label: dict[str, dict[str, float]] = {}
+    class_weights_by_head_by_answer: dict[str, dict[str, float]] = {}
+    class_weights_by_head_by_label: dict[str, dict[str, float]] = {}
 
-    for head in head_label_maps:
+    for head in [h for h in HEAD_ORDER if h in head_label_maps]:
         head_train = train_df[train_df["edge_head"] == head]
 
         answer_counts = (
@@ -294,23 +374,43 @@ def main() -> None:
             .to_dict()
         )
 
+        missing_head_answers = sorted(set(head_label_maps[head]) - set(answer_counts))
+
+        if missing_head_answers:
+            raise ValueError(
+                f"Some answers for head '{head}' are not present in train split: "
+                f"{missing_head_answers}"
+            )
+
         weights_by_answer = normalize_weights(
             {str(k): int(v) for k, v in answer_counts.items()},
             mode=args.weight_mode,
         )
 
         weights_by_label = {
-            str(head_label_maps[head][answer]): weights_by_answer[answer]
+            str(head_label_maps[head][answer]): float(weights_by_answer[answer])
             for answer in head_label_maps[head]
         }
 
-        class_weights_by_head[head] = weights_by_answer
-        class_weights_by_head_label[head] = weights_by_label
+        class_weights_by_head_by_answer[head] = weights_by_answer
+        class_weights_by_head_by_label[head] = weights_by_label
 
-    save_json(class_weights_edge_global_by_class, output_dir / "class_weights_edge_global_by_class.json")
-    save_json(class_weights_edge_global_by_label, output_dir / "class_weights_edge_global_by_label.json")
-    save_json(class_weights_by_head, output_dir / "class_weights_by_head_by_answer.json")
-    save_json(class_weights_by_head_label, output_dir / "class_weights_by_head_by_label.json")
+    save_json(
+        class_weights_edge_global_by_class,
+        output_dir / "class_weights_edge_global_by_class.json",
+    )
+    save_json(
+        class_weights_edge_global_by_label,
+        output_dir / "class_weights_edge_global_by_label.json",
+    )
+    save_json(
+        class_weights_by_head_by_answer,
+        output_dir / "class_weights_by_head_by_answer.json",
+    )
+    save_json(
+        class_weights_by_head_by_label,
+        output_dir / "class_weights_by_head_by_label.json",
+    )
 
     # Leakage / unseen checks.
     train_edge_classes = split_set(df, "train", "edge_class")
@@ -327,11 +427,33 @@ def main() -> None:
     valid_unseen_original = sorted(valid_original - train_original)
     test_unseen_original = sorted(test_original - train_original)
 
+    # Train distribution summaries.
+    train_edge_class_counts_by_label = (
+        train_df.groupby(["edge_class", "edge_global_label"])
+        .size()
+        .reset_index(name="train_count")
+        .sort_values("edge_global_label")
+    )
+
+    train_head_counts = (
+        train_df.groupby(["edge_head"])
+        .size()
+        .reset_index(name="train_count")
+        .sort_values("edge_head")
+    )
+
     # Final answer space object.
     answer_space = {
+        "target_formulation": "single_head_edge_global",
+        "count_cap": count_cap,
+        "num_edge_global_classes": len(edge_class_to_label),
+        "head_order": [head for head in HEAD_ORDER if head in head_label_maps],
         "target_modes": {
             "original_global": {
-                "description": "Original FloodNet answer labels. Not ideal because val/test contain unseen raw count labels.",
+                "description": (
+                    "Original FloodNet answer labels. Kept only for analysis/comparison; "
+                    "not recommended because valid/test contain unseen raw count labels."
+                ),
                 "num_classes_used_in_manifest": len(original_answer_to_label),
                 "answer_to_label": original_answer_to_label,
                 "label_to_answer": original_label_to_answer,
@@ -339,15 +461,25 @@ def main() -> None:
                 "test_unseen_answers_vs_train": test_unseen_original,
             },
             "edge_global": {
-                "description": "Single 19-class edge-clean target using answer groups and capped counts.",
+                "description": (
+                    "Main compact single-head edge-clean target using answer groups "
+                    "and capped counts."
+                ),
+                "target_column": "target_edge_global",
+                "logit_shape": [None, len(edge_class_to_label)],
                 "num_classes": len(edge_class_to_label),
+                "count_cap": count_cap,
                 "class_to_label": edge_class_to_label,
                 "label_to_class": edge_label_to_class,
                 "valid_unseen_classes_vs_train": valid_unseen_edge,
                 "test_unseen_classes_vs_train": test_unseen_edge,
             },
-            "edge_multihead": {
-                "description": "Question-type-aware multi-head target. Use edge_head and edge_head_label.",
+            "edge_head_local": {
+                "description": (
+                    "Auxiliary/diagnostic local labels inside each edge_head. "
+                    "Useful for metrics or count auxiliary losses, not the main deployment target."
+                ),
+                "target_column": "target_edge_head",
                 "num_heads": len(head_label_maps),
                 "head_order": [head for head in HEAD_ORDER if head in head_label_maps],
                 "head_label_maps": head_label_maps,
@@ -355,10 +487,14 @@ def main() -> None:
             },
         },
         "recommended_training_targets": {
-            "teacher_fair_tinyvqa_style": "original_global or edge_global with LSTM question encoder",
-            "teacher_strong": "edge_global or edge_multihead with ConvNeXt/EfficientNet image encoder and LSTM question encoder",
-            "student_gap9": "edge_multihead with tiny CNN and template/question embedding",
-            "deployment_main": "edge_multihead",
+            "teacher_main": "edge_global",
+            "teacher_weighted_ce": "edge_global with class_weights_edge_global_by_label.json",
+            "teacher_count_aux": (
+                "edge_global as main output, optional count auxiliary loss using "
+                "edge_head == 'count' and target_edge_head for count samples"
+            ),
+            "student_gap9": "edge_global with tiny CNN image encoder and question_template_id embedding",
+            "deployment_main": "edge_global",
         },
         "class_weights": {
             "weight_mode": args.weight_mode,
@@ -367,16 +503,28 @@ def main() -> None:
             "by_head_answer_file": "class_weights_by_head_by_answer.json",
             "by_head_label_file": "class_weights_by_head_by_label.json",
         },
+        "diagnostics": {
+            "valid_unseen_edge_classes_vs_train": valid_unseen_edge,
+            "test_unseen_edge_classes_vs_train": test_unseen_edge,
+            "valid_unseen_original_answers_vs_train": valid_unseen_original,
+            "test_unseen_original_answers_vs_train": test_unseen_original,
+        },
     }
 
     save_json(answer_space, output_dir / "answer_space.json")
 
     # Summary.
     summary_lines = []
+
     summary_lines.append("TinyDisasterVQA / Answer Space Summary")
     summary_lines.append("=" * 80)
     summary_lines.append(f"Manifest: {args.manifest}")
     summary_lines.append(f"Total samples: {len(df)}")
+    summary_lines.append("")
+    summary_lines.append("Task formulation:")
+    summary_lines.append("  single_head_edge_global")
+    summary_lines.append(f"  count_cap: {count_cap}+")
+    summary_lines.append(f"  edge_global_classes: {len(edge_class_to_label)}")
     summary_lines.append("")
     summary_lines.append("Original global answer space:")
     summary_lines.append(f"  Classes used in manifest: {len(original_answer_to_label)}")
@@ -389,23 +537,46 @@ def main() -> None:
     summary_lines.append(f"  Test unseen classes vs train:  {test_unseen_edge}")
     summary_lines.append("")
     summary_lines.append("Edge global classes:")
-    for edge_class, idx in edge_class_to_label.items():
-        train_count = int(train_edge_counts.get(edge_class, 0))
-        summary_lines.append(f"  {idx:02d}: {edge_class:<25} train_count={train_count}")
+    for _, row in train_edge_class_counts_by_label.iterrows():
+        idx = int(row["edge_global_label"])
+        edge_class = str(row["edge_class"])
+        train_count = int(row["train_count"])
+        weight = class_weights_edge_global_by_label[str(idx)]
+
+        summary_lines.append(
+            f"  {idx:02d}: {edge_class:<25} "
+            f"train_count={train_count:<5d} "
+            f"weight={weight:.4f}"
+        )
+
     summary_lines.append("")
-    summary_lines.append("Edge multi-head answer space:")
+    summary_lines.append("Edge heads:")
+    for _, row in train_head_counts.iterrows():
+        summary_lines.append(
+            f"  {str(row['edge_head']):<12} train_count={int(row['train_count'])}"
+        )
+
+    summary_lines.append("")
+    summary_lines.append("Local labels by edge head:")
     for head in [h for h in HEAD_ORDER if h in head_label_maps]:
         summary_lines.append(f"  {head}: {len(head_label_maps[head])} classes")
+
         for answer, idx in head_label_maps[head].items():
             count = int(
-                len(train_df[(train_df["edge_head"] == head) & (train_df["edge_answer"] == answer)])
+                len(
+                    train_df[
+                        (train_df["edge_head"] == head)
+                        & (train_df["edge_answer"].astype(str) == str(answer))
+                    ]
+                )
             )
             summary_lines.append(f"    {idx:02d}: {answer:<12} train_count={count}")
+
     summary_lines.append("")
     summary_lines.append("Recommended:")
-    summary_lines.append("  Use edge_global for first simple baseline.")
-    summary_lines.append("  Use edge_multihead for final TinyDisasterVQA/GAP9 model.")
-    summary_lines.append("  Keep original_global only for TinyVQA-style comparison, not deployment.")
+    summary_lines.append("  Use edge_global as the main teacher/student/deployment target.")
+    summary_lines.append("  Use class_weights_edge_global_by_label.json for weighted CE ablation.")
+    summary_lines.append("  Use edge_head/target_edge_head only for diagnostics or count auxiliary loss.")
     summary_lines.append("")
 
     summary_path = output_dir / "answer_space_summary.txt"
