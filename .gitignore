@@ -226,7 +226,8 @@ checkpoints/
 *.ckpt
 
 dataset/images
-outputs 
+outputs
+outputs_v2 
 runs/ 
 
 docs/
