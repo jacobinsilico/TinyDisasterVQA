@@ -4,8 +4,13 @@ models.py
 Model definitions for TinyDisasterVQA.
 
 Current models:
-  - TeacherVQA: strong image encoder + LSTM question encoder + MLP classifier
-  - TDMSVQA: TDM-S, smallest TinyDisasterVQA student model
+  - TeacherVQA: strong image encoder + configurable question encoder + MLP classifier
+  - TDMVQA: tiny CNN + template embedding student model
+
+Teacher supports:
+  - LSTM question encoder
+  - question_template_id embedding encoder
+  - optional count auxiliary head for count-aware teacher ablation
 """
 
 from __future__ import annotations
@@ -29,30 +34,12 @@ ImageBackboneName = Literal[
     "resnet50",
 ]
 
+TeacherQuestionEncoderName = Literal["lstm", "template"]
+
 
 # =============================================================================
-# Teacher model
+# Shared encoders
 # =============================================================================
-
-
-@dataclass
-class TeacherConfig:
-    image_backbone: ImageBackboneName = "convnext_tiny"
-    pretrained: bool = True
-
-    vocab_size: int = 50
-    pad_id: int = 0
-    question_embed_dim: int = 128
-    question_hidden_dim: int = 256
-    question_num_layers: int = 1
-    question_bidirectional: bool = False
-    question_dropout: float = 0.0
-
-    fusion_hidden_dim: int = 512
-    fusion_dropout: float = 0.3
-
-    num_classes: int = 19
-    freeze_image_encoder: bool = False
 
 
 class TorchvisionImageEncoder(nn.Module):
@@ -125,7 +112,7 @@ class TorchvisionImageEncoder(nn.Module):
             self.feature_dim = model.fc.in_features
             self.encoder = nn.Sequential(
                 *list(model.children())[:-1],
-                nn.Flatten(1),
+                nn.FlatTensor(1) if False else nn.Flatten(1),
             )
 
         elif backbone_name == "resnet50":
@@ -229,13 +216,109 @@ class LSTMQuestionEncoder(nn.Module):
         return question_features
 
 
+class TemplateQuestionEncoder(nn.Module):
+    """
+    Template-ID question encoder.
+
+    FloodNet-VQA has a small fixed set of question templates, so template IDs are
+    a useful lightweight alternative to a full language encoder.
+    """
+
+    def __init__(
+        self,
+        num_question_templates: int = 31,
+        embed_dim: int = 32,
+    ) -> None:
+        super().__init__()
+
+        self.num_question_templates = num_question_templates
+        self.embed_dim = embed_dim
+
+        self.embedding = nn.Embedding(
+            num_embeddings=num_question_templates,
+            embedding_dim=embed_dim,
+        )
+
+        self.output_dim = embed_dim
+
+    def forward(self, question_template_ids: torch.Tensor) -> torch.Tensor:
+        if question_template_ids.ndim > 1:
+            question_template_ids = question_template_ids.squeeze(-1)
+
+        return self.embedding(question_template_ids.long())
+
+
+def _make_mlp(
+    in_dim: int,
+    hidden_dim: int,
+    out_dim: int,
+    dropout: float,
+    layers: int = 1,
+) -> nn.Sequential:
+    if layers <= 1:
+        return nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, out_dim),
+        )
+
+    return nn.Sequential(
+        nn.Linear(in_dim, hidden_dim),
+        nn.ReLU(inplace=True),
+        nn.Dropout(dropout),
+        nn.Linear(hidden_dim, hidden_dim // 2),
+        nn.ReLU(inplace=True),
+        nn.Dropout(dropout),
+        nn.Linear(hidden_dim // 2, out_dim),
+    )
+
+
+# =============================================================================
+# Teacher model
+# =============================================================================
+
+
+@dataclass
+class TeacherConfig:
+    image_backbone: ImageBackboneName = "convnext_tiny"
+    pretrained: bool = True
+
+    question_encoder: TeacherQuestionEncoderName = "lstm"
+
+    vocab_size: int = 50
+    pad_id: int = 0
+    question_embed_dim: int = 128
+    question_hidden_dim: int = 256
+    question_num_layers: int = 1
+    question_bidirectional: bool = False
+    question_dropout: float = 0.0
+
+    num_question_templates: int = 31
+    template_embed_dim: int = 128
+
+    fusion_hidden_dim: int = 512
+    fusion_dropout: float = 0.3
+
+    num_classes: int = 14
+    freeze_image_encoder: bool = False
+
+    use_count_aux: bool = False
+    num_count_classes: int = 6
+
+
 class TeacherVQA(nn.Module):
     """
-    Strong teacher model:
+    Strong teacher model.
 
-      image -> ConvNeXt/EfficientNet/ResNet -> image feature
-      question tokens -> Embedding + LSTM -> question feature
-      concat(image, question) -> MLP -> edge_global logits
+    Main output:
+      logits [B, num_classes] for compact edge_global classification.
+
+    Optional auxiliary output:
+      count_logits [B, num_count_classes] for count-only auxiliary training.
+
+    The auxiliary head is training-only. The main deployment/student target stays
+    single-head edge_global.
     """
 
     def __init__(self, config: TeacherConfig) -> None:
@@ -249,15 +332,23 @@ class TeacherVQA(nn.Module):
             freeze=config.freeze_image_encoder,
         )
 
-        self.question_encoder = LSTMQuestionEncoder(
-            vocab_size=config.vocab_size,
-            pad_id=config.pad_id,
-            embed_dim=config.question_embed_dim,
-            hidden_dim=config.question_hidden_dim,
-            num_layers=config.question_num_layers,
-            bidirectional=config.question_bidirectional,
-            dropout=config.question_dropout,
-        )
+        if config.question_encoder == "lstm":
+            self.question_encoder = LSTMQuestionEncoder(
+                vocab_size=config.vocab_size,
+                pad_id=config.pad_id,
+                embed_dim=config.question_embed_dim,
+                hidden_dim=config.question_hidden_dim,
+                num_layers=config.question_num_layers,
+                bidirectional=config.question_bidirectional,
+                dropout=config.question_dropout,
+            )
+        elif config.question_encoder == "template":
+            self.question_encoder = TemplateQuestionEncoder(
+                num_question_templates=config.num_question_templates,
+                embed_dim=config.template_embed_dim,
+            )
+        else:
+            raise ValueError(f"Unknown teacher question_encoder: {config.question_encoder}")
 
         fusion_dim = self.image_encoder.feature_dim + self.question_encoder.output_dim
 
@@ -271,19 +362,72 @@ class TeacherVQA(nn.Module):
             nn.Linear(config.fusion_hidden_dim // 2, config.num_classes),
         )
 
+        if config.use_count_aux:
+            self.count_aux_classifier = nn.Sequential(
+                nn.Linear(fusion_dim, config.fusion_hidden_dim // 2),
+                nn.ReLU(inplace=True),
+                nn.Dropout(config.fusion_dropout),
+                nn.Linear(config.fusion_hidden_dim // 2, config.num_count_classes),
+            )
+        else:
+            self.count_aux_classifier = None
+
+    def encode_question(
+        self,
+        question_tokens: torch.Tensor | None = None,
+        question_lengths: torch.Tensor | None = None,
+        question_template_ids: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if self.config.question_encoder == "lstm":
+            if question_tokens is None or question_lengths is None:
+                raise ValueError(
+                    "LSTM teacher requires question_tokens and question_lengths."
+                )
+
+            return self.question_encoder(
+                question_tokens=question_tokens,
+                question_lengths=question_lengths,
+            )
+
+        if self.config.question_encoder == "template":
+            if question_template_ids is None:
+                raise ValueError("Template teacher requires question_template_ids.")
+
+            return self.question_encoder(question_template_ids)
+
+        raise ValueError(f"Unknown teacher question_encoder: {self.config.question_encoder}")
+
     def forward(
         self,
         images: torch.Tensor,
-        question_tokens: torch.Tensor,
-        question_lengths: torch.Tensor,
-    ) -> torch.Tensor:
+        question_tokens: torch.Tensor | None = None,
+        question_lengths: torch.Tensor | None = None,
+        question_template_ids: torch.Tensor | None = None,
+        return_aux: bool = False,
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
         image_features = self.image_encoder(images)
-        question_features = self.question_encoder(question_tokens, question_lengths)
+
+        question_features = self.encode_question(
+            question_tokens=question_tokens,
+            question_lengths=question_lengths,
+            question_template_ids=question_template_ids,
+        )
 
         fused = torch.cat([image_features, question_features], dim=1)
+
         logits = self.classifier(fused)
 
-        return logits
+        if not return_aux:
+            return logits
+
+        outputs: dict[str, torch.Tensor] = {
+            "logits": logits,
+        }
+
+        if self.count_aux_classifier is not None:
+            outputs["count_logits"] = self.count_aux_classifier(fused)
+
+        return outputs
 
     def freeze_image_encoder(self) -> None:
         self.image_encoder.freeze()
@@ -292,48 +436,117 @@ class TeacherVQA(nn.Module):
         self.image_encoder.unfreeze()
 
 
+def _infer_num_classes_from_metadata(metadata: dict, fallback: int | None = None) -> int:
+    for key in ["num_classes", "num_edge_global_classes"]:
+        if key in metadata:
+            return int(metadata[key])
+
+    try:
+        return int(metadata["answer_space"]["target_modes"]["edge_global"]["num_classes"])
+    except KeyError:
+        pass
+
+    if fallback is not None:
+        return int(fallback)
+
+    raise KeyError(
+        "Could not infer num_classes from metadata. Expected one of: "
+        "num_classes, num_edge_global_classes, or answer_space.target_modes.edge_global.num_classes."
+    )
+
+
+def _infer_num_question_templates_from_metadata(metadata: dict, fallback: int = 31) -> int:
+    if "num_question_templates" in metadata:
+        return int(metadata["num_question_templates"])
+
+    return int(fallback)
+
+
+def _infer_num_count_classes_from_metadata(metadata: dict, fallback: int = 6) -> int:
+    if "head_label_maps" in metadata and "count" in metadata["head_label_maps"]:
+        return len(metadata["head_label_maps"]["count"])
+
+    try:
+        return len(
+            metadata["answer_space"]["target_modes"]["edge_head_local"]["head_label_maps"]["count"]
+        )
+    except KeyError:
+        pass
+
+    try:
+        return len(
+            metadata["answer_space"]["target_modes"]["edge_multihead"]["head_label_maps"]["count"]
+        )
+    except KeyError:
+        pass
+
+    return int(fallback)
+
+
 def build_teacher_from_metadata(
     metadata: dict,
     image_backbone: ImageBackboneName = "convnext_tiny",
     pretrained: bool = True,
-    num_classes: int = 19,
+    num_classes: int | None = None,
     freeze_image_encoder: bool = False,
+    question_encoder: TeacherQuestionEncoderName = "lstm",
     question_embed_dim: int = 128,
     question_hidden_dim: int = 256,
+    template_embed_dim: int = 128,
     fusion_hidden_dim: int = 512,
     fusion_dropout: float = 0.3,
+    use_count_aux: bool = False,
+    num_count_classes: int | None = None,
 ) -> TeacherVQA:
     """
-    Convenience builder using outputs/training_data/metadata.json.
+    Convenience builder using outputs/training_data_*/metadata.json.
     """
     vocab_size = int(metadata["vocab_size_with_pad"])
     pad_id = int(metadata["pad_id"])
 
+    inferred_num_classes = _infer_num_classes_from_metadata(
+        metadata=metadata,
+        fallback=num_classes,
+    )
+
+    inferred_num_templates = _infer_num_question_templates_from_metadata(metadata)
+
+    inferred_num_count_classes = (
+        _infer_num_count_classes_from_metadata(metadata)
+        if num_count_classes is None
+        else int(num_count_classes)
+    )
+
     config = TeacherConfig(
         image_backbone=image_backbone,
         pretrained=pretrained,
+        question_encoder=question_encoder,
         vocab_size=vocab_size,
         pad_id=pad_id,
         question_embed_dim=question_embed_dim,
         question_hidden_dim=question_hidden_dim,
+        num_question_templates=inferred_num_templates,
+        template_embed_dim=template_embed_dim,
         fusion_hidden_dim=fusion_hidden_dim,
         fusion_dropout=fusion_dropout,
-        num_classes=num_classes,
+        num_classes=inferred_num_classes,
         freeze_image_encoder=freeze_image_encoder,
+        use_count_aux=use_count_aux,
+        num_count_classes=inferred_num_count_classes,
     )
 
     return TeacherVQA(config)
-
 
 
 # =============================================================================
 # TDM student models
 # =============================================================================
 
+
 StudentHeadType = Literal["single", "multihead"]
 StudentVariant = Literal["tdm_xxs", "tdm_xs", "tdm_s", "tdm_m"]
 
-EDGE_HEADS: tuple[str, str, str, str] = ("binary", "condition", "count", "density")
+EDGE_HEADS: tuple[str, str, str, str] = ("binary", "condition", "density", "count")
 EDGE_HEAD_TO_ID: dict[str, int] = {name: idx for idx, name in enumerate(EDGE_HEADS)}
 
 
@@ -345,15 +558,13 @@ class TDMConfig:
     Used for:
       - TDM-XXS: ultra-small student
       - TDM-XS:  very small student
-      - TDM-S:   current 85k-param baseline
+      - TDM-S:   current small baseline
       - TDM-M:   wider reference model
 
-    head_type:
-      - "single": one global 19-class classifier
-      - "multihead": shared fusion trunk + one 19-class output head per edge_head
-        The multihead version still returns global [B, num_classes] logits, so metrics
-        and CE can remain mostly compatible. The training/eval script must pass
-        edge_heads or edge_head_ids to forward().
+    Preferred final deployment head_type:
+      - single: one global edge_clean classifier.
+
+    multihead is kept for backward compatibility only.
     """
 
     variant: StudentVariant = "tdm_s"
@@ -367,13 +578,12 @@ class TDMConfig:
     fusion_dropout: float = 0.1
     fusion_layers: int = 1
 
-    num_classes: int = 19
+    num_classes: int = 14
 
     head_type: StudentHeadType = "single"
     edge_head_names: tuple[str, ...] = EDGE_HEADS
 
 
-# Backwards-compatible config names.
 @dataclass
 class TDMSConfig(TDMConfig):
     variant: StudentVariant = "tdm_s"
@@ -383,7 +593,7 @@ class TDMSConfig(TDMConfig):
     fusion_hidden_dim: int = 192
     fusion_dropout: float = 0.1
     fusion_layers: int = 1
-    num_classes: int = 19
+    num_classes: int = 14
     head_type: StudentHeadType = "single"
 
 
@@ -396,7 +606,7 @@ class TDMMConfig(TDMConfig):
     fusion_hidden_dim: int = 384
     fusion_dropout: float = 0.15
     fusion_layers: int = 2
-    num_classes: int = 19
+    num_classes: int = 14
     head_type: StudentHeadType = "single"
 
 
@@ -535,75 +745,12 @@ class TinyCNNImageEncoder(nn.Module):
         return self.encoder(images)
 
 
-class TemplateQuestionEncoder(nn.Module):
-    """
-    Question encoder for TDM students.
-
-    FloodNet has a small set of question templates, so the student can use
-    question_template_id directly instead of an LSTM.
-    """
-
-    def __init__(
-        self,
-        num_question_templates: int = 31,
-        embed_dim: int = 32,
-    ) -> None:
-        super().__init__()
-
-        self.num_question_templates = num_question_templates
-        self.embed_dim = embed_dim
-
-        self.embedding = nn.Embedding(
-            num_embeddings=num_question_templates,
-            embedding_dim=embed_dim,
-        )
-
-        self.output_dim = embed_dim
-
-    def forward(self, question_template_ids: torch.Tensor) -> torch.Tensor:
-        if question_template_ids.ndim > 1:
-            question_template_ids = question_template_ids.squeeze(-1)
-
-        return self.embedding(question_template_ids.long())
-
-
-def _make_mlp(
-    in_dim: int,
-    hidden_dim: int,
-    out_dim: int,
-    dropout: float,
-    layers: int = 1,
-) -> nn.Sequential:
-    if layers <= 1:
-        return nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, out_dim),
-        )
-
-    return nn.Sequential(
-        nn.Linear(in_dim, hidden_dim),
-        nn.ReLU(inplace=True),
-        nn.Dropout(dropout),
-        nn.Linear(hidden_dim, hidden_dim // 2),
-        nn.ReLU(inplace=True),
-        nn.Dropout(dropout),
-        nn.Linear(hidden_dim // 2, out_dim),
-    )
-
-
 class MultiHeadGlobalClassifier(nn.Module):
     """
-    Multi-head classifier with one global-vocabulary head per edge_head.
+    Backward-compatible multi-head classifier.
 
-    Each head predicts the same 19 global answer classes, but only the relevant
-    head is used for each sample. This avoids needing local-label mappings and
-    keeps CE/metrics compatible with global targets.
-
-    The training/eval script must pass either:
-      - edge_heads: list/tuple of strings, e.g. ["binary", "count", ...], or
-      - edge_head_ids: tensor with ids using EDGE_HEAD_TO_ID order
+    Not recommended for the final GAP9 formulation, but kept so old experiments
+    do not immediately break.
     """
 
     def __init__(
@@ -641,14 +788,18 @@ class MultiHeadGlobalClassifier(nn.Module):
     ) -> torch.Tensor:
         if isinstance(edge_heads, torch.Tensor):
             edge_heads = edge_heads.to(device)
+
             if edge_heads.ndim > 1:
                 edge_heads = edge_heads.squeeze(-1)
+
             return edge_heads.long() == int(head_id)
 
         normalized = []
+
         for value in edge_heads:
             if isinstance(value, bytes):
                 value = value.decode("utf-8")
+
             normalized.append(str(value))
 
         return torch.tensor(
@@ -673,9 +824,6 @@ class MultiHeadGlobalClassifier(nn.Module):
 
         hidden = self.trunk(fused)
 
-        # Use hidden.new_full rather than fused.new_full because AMP may make
-        # the classifier/trunk output float16 while fused remains float32.
-        # The destination tensor must match the dtype of each head output.
         logits = hidden.new_full(
             (hidden.size(0), self.num_classes),
             fill_value=-1.0e4,
@@ -699,11 +847,11 @@ class TDMVQA(nn.Module):
     """
     Generic TDM student model.
 
-    Forward signature intentionally accepts question_tokens/question_lengths too,
-    but the student only uses question_template_ids.
+    Forward signature accepts question_tokens/question_lengths too, but the
+    student only uses question_template_ids.
 
     Output:
-      logits [B, 19] for edge_global classification.
+      logits [B, num_classes] for edge_global classification.
     """
 
     def __init__(self, config: TDMConfig) -> None:
@@ -772,7 +920,6 @@ class TDMVQA(nn.Module):
         return logits
 
 
-# Backwards-compatible model class names.
 class TDMSVQA(TDMVQA):
     pass
 
@@ -783,7 +930,7 @@ class TDMMVQA(TDMVQA):
 
 def make_tdm_config(
     variant: StudentVariant = "tdm_s",
-    num_classes: int = 19,
+    num_classes: int = 14,
     num_question_templates: int = 31,
     question_template_embed_dim: int | None = None,
     image_channels: tuple[int, int, int, int, int] | None = None,
@@ -829,11 +976,35 @@ def make_tdm_config(
     return config
 
 
+def _infer_tdm_num_classes(metadata: dict, fallback: int = 14) -> int:
+    try:
+        return int(metadata["num_classes"])
+    except KeyError:
+        pass
+
+    try:
+        return int(metadata["num_edge_global_classes"])
+    except KeyError:
+        pass
+
+    try:
+        return int(metadata["answer_space"]["target_modes"]["edge_global"]["num_classes"])
+    except KeyError:
+        return int(fallback)
+
+
+def _infer_tdm_num_question_templates(metadata: dict, fallback: int = 31) -> int:
+    try:
+        return int(metadata["num_question_templates"])
+    except KeyError:
+        return int(fallback)
+
+
 def build_tdm_from_metadata(
     metadata: dict,
     variant: StudentVariant = "tdm_s",
-    num_classes: int = 19,
-    num_question_templates: int = 31,
+    num_classes: int | None = None,
+    num_question_templates: int | None = None,
     question_template_embed_dim: int | None = None,
     image_channels: tuple[int, int, int, int, int] | None = None,
     fusion_hidden_dim: int | None = None,
@@ -843,15 +1014,23 @@ def build_tdm_from_metadata(
 ) -> TDMVQA:
     """
     Generic convenience builder for all TDM student variants.
-
-    metadata is accepted for API symmetry with teacher builder.
     """
-    _ = metadata
+    inferred_num_classes = (
+        _infer_tdm_num_classes(metadata)
+        if num_classes is None
+        else int(num_classes)
+    )
+
+    inferred_num_templates = (
+        _infer_tdm_num_question_templates(metadata)
+        if num_question_templates is None
+        else int(num_question_templates)
+    )
 
     config = make_tdm_config(
         variant=variant,
-        num_classes=num_classes,
-        num_question_templates=num_question_templates,
+        num_classes=inferred_num_classes,
+        num_question_templates=inferred_num_templates,
         question_template_embed_dim=question_template_embed_dim,
         image_channels=image_channels,
         fusion_hidden_dim=fusion_hidden_dim,
@@ -868,8 +1047,8 @@ def build_tdm_from_metadata(
 
 def build_tdm_xxs_from_metadata(
     metadata: dict,
-    num_classes: int = 19,
-    num_question_templates: int = 31,
+    num_classes: int | None = None,
+    num_question_templates: int | None = None,
     head_type: StudentHeadType = "single",
 ) -> TDMVQA:
     return build_tdm_from_metadata(
@@ -883,8 +1062,8 @@ def build_tdm_xxs_from_metadata(
 
 def build_tdm_xs_from_metadata(
     metadata: dict,
-    num_classes: int = 19,
-    num_question_templates: int = 31,
+    num_classes: int | None = None,
+    num_question_templates: int | None = None,
     head_type: StudentHeadType = "single",
 ) -> TDMVQA:
     return build_tdm_from_metadata(
@@ -898,18 +1077,13 @@ def build_tdm_xs_from_metadata(
 
 def build_tdm_s_from_metadata(
     metadata: dict,
-    num_classes: int = 19,
-    num_question_templates: int = 31,
+    num_classes: int | None = None,
+    num_question_templates: int | None = None,
     question_template_embed_dim: int = 32,
     fusion_hidden_dim: int = 192,
     fusion_dropout: float = 0.1,
     head_type: StudentHeadType = "single",
 ) -> TDMSVQA:
-    """
-    Convenience builder for TDM-S.
-
-    metadata is accepted for API symmetry with teacher builder.
-    """
     return build_tdm_from_metadata(
         metadata=metadata,
         variant="tdm_s",
@@ -924,16 +1098,13 @@ def build_tdm_s_from_metadata(
 
 def build_tdm_m_from_metadata(
     metadata: dict,
-    num_classes: int = 19,
-    num_question_templates: int = 31,
+    num_classes: int | None = None,
+    num_question_templates: int | None = None,
     question_template_embed_dim: int = 64,
     fusion_hidden_dim: int = 384,
     fusion_dropout: float = 0.15,
     head_type: StudentHeadType = "single",
 ) -> TDMMVQA:
-    """
-    Convenience builder for TDM-M.
-    """
     return build_tdm_from_metadata(
         metadata=metadata,
         variant="tdm_m",
@@ -944,6 +1115,7 @@ def build_tdm_m_from_metadata(
         fusion_dropout=fusion_dropout,
         head_type=head_type,
     )  # type: ignore[return-value]
+
 
 # =============================================================================
 # Shared model utilities
@@ -992,8 +1164,13 @@ def describe_model(model: nn.Module) -> str:
         lines.append(f"Image backbone:    {model.config.image_backbone}")
         lines.append(f"Pretrained:        {model.config.pretrained}")
         lines.append(f"Image feature dim: {model.image_encoder.feature_dim}")
+        lines.append(f"Question encoder:  {model.config.question_encoder}")
         lines.append(f"Question dim:      {model.question_encoder.output_dim}")
         lines.append(f"Num classes:       {model.config.num_classes}")
+        lines.append(f"Count aux:         {model.config.use_count_aux}")
+
+        if model.config.use_count_aux:
+            lines.append(f"Count classes:     {model.config.num_count_classes}")
 
     if isinstance(model, TDMVQA):
         lines.append(f"Student variant:   {model.config.variant}")

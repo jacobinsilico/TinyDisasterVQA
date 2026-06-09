@@ -2,33 +2,24 @@
 """
 05_train_teacher.py
 
-Train the TinyDisasterVQA teacher model.
+Train TinyDisasterVQA teacher models for the official T1-T6 ablation.
 
-Default:
-  ConvNeXt-Tiny or Swin-Tiny image encoder
-  LSTM question encoder
-  19-class edge_global classifier
+Supported teacher ablations:
 
-Run from repo root:
+T1: cap10 + LSTM     + CE
+T2: cap5  + LSTM     + CE
+T3: cap10 + template + CE
+T4: cap5  + template + CE
+T5: cap5  + template + weighted CE
+T6: cap5  + template + count auxiliary loss
 
-PYTHONPATH=src python scripts/05_train_teacher.py
+The main output is always single-head edge_global logits:
+  cap5  -> [B, 14]
+  cap10 -> [B, 19]
 
-Useful smoke test:
-
-PYTHONPATH=src python scripts/05_train_teacher.py \
-  --epochs 1 \
-  --batch-size 8 \
-  --num-workers 0 \
-  --run-name smoke_teacher
-
-Useful overfit test:
-
-PYTHONPATH=src python scripts/05_train_teacher.py \
-  --epochs 30 \
-  --batch-size 8 \
-  --num-workers 0 \
-  --overfit-samples 32 \
-  --run-name overfit_teacher_32
+Count auxiliary loss is training-only:
+  main CE over edge_global target
+  + lambda * count CE over target_edge_head for count samples only
 """
 
 from __future__ import annotations
@@ -78,14 +69,24 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
     # Paths.
-    parser.add_argument("--train-csv", type=Path, default=Path("outputs/training_data/train.csv"))
-    parser.add_argument("--valid-csv", type=Path, default=Path("outputs/training_data/valid.csv"))
-    parser.add_argument("--test-csv", type=Path, default=Path("outputs/training_data/test.csv"))
-    parser.add_argument("--metadata", type=Path, default=Path("outputs/training_data/metadata.json"))
+    parser.add_argument("--train-csv", type=Path, default=Path("outputs/training_data_cap5/train.csv"))
+    parser.add_argument("--valid-csv", type=Path, default=Path("outputs/training_data_cap5/valid.csv"))
+    parser.add_argument("--test-csv", type=Path, default=Path("outputs/training_data_cap5/test.csv"))
+    parser.add_argument("--metadata", type=Path, default=Path("outputs/training_data_cap5/metadata.json"))
     parser.add_argument(
         "--class-weights",
         type=Path,
-        default=Path("outputs/answer_space/class_weights_edge_global_by_label.json"),
+        default=Path("outputs/answer_space_cap5/class_weights_edge_global_by_label.json"),
+        help="Global edge class weights used for weighted CE.",
+    )
+    parser.add_argument(
+        "--count-aux-weights",
+        type=Path,
+        default=None,
+        help=(
+            "Optional local count-head weights. Can point to "
+            "class_weights_by_head_by_label.json or a direct {label: weight} JSON."
+        ),
     )
     parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
     parser.add_argument("--runs-dir", type=Path, default=Path("runs"))
@@ -126,22 +127,66 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pretrained", action="store_true", default=True)
     parser.add_argument("--no-pretrained", action="store_false", dest="pretrained")
     parser.add_argument("--freeze-image-encoder", action="store_true", default=False)
+
+    parser.add_argument(
+        "--question-encoder",
+        type=str,
+        default="lstm",
+        choices=["lstm", "template"],
+        help="Question encoder used by the teacher.",
+    )
     parser.add_argument("--question-embed-dim", type=int, default=128)
     parser.add_argument("--question-hidden-dim", type=int, default=256)
+    parser.add_argument("--template-embed-dim", type=int, default=128)
+
     parser.add_argument("--fusion-hidden-dim", type=int, default=512)
     parser.add_argument("--fusion-dropout", type=float, default=0.3)
-    parser.add_argument("--num-classes", type=int, default=19)
-    parser.add_argument("--early-stopping-patience", type=int, default=0)
-    parser.add_argument("--early-stopping-min-delta", type=float, default=0.0)
+
+    parser.add_argument(
+        "--num-classes",
+        type=int,
+        default=None,
+        help="Usually inferred from metadata. cap5=14, cap10=19.",
+    )
+    parser.add_argument(
+        "--num-count-classes",
+        type=int,
+        default=None,
+        help="Usually inferred from metadata. cap5=6, cap10=11.",
+    )
 
     # Optimization.
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--use-class-weights", action="store_true", default=False)
+
+    parser.add_argument(
+        "--loss-mode",
+        type=str,
+        default="ce",
+        choices=["ce", "weighted_ce", "count_aux"],
+        help="Teacher training objective.",
+    )
+    parser.add_argument(
+        "--use-class-weights",
+        action="store_true",
+        default=False,
+        help="Backward-compatible alias for --loss-mode weighted_ce.",
+    )
+    parser.add_argument(
+        "--count-aux-weight",
+        type=float,
+        default=0.5,
+        help="Lambda for count auxiliary loss.",
+    )
+
     parser.add_argument("--amp", action="store_true", default=True)
     parser.add_argument("--no-amp", action="store_false", dest="amp")
+
+    # Early stopping.
+    parser.add_argument("--early-stopping-patience", type=int, default=0)
+    parser.add_argument("--early-stopping-min-delta", type=float, default=0.0)
 
     # Logging/checkpointing.
     parser.add_argument("--log-interval", type=int, default=50)
@@ -153,11 +198,80 @@ def parse_args() -> argparse.Namespace:
 def get_device(arg: str) -> torch.device:
     if arg == "cpu":
         return torch.device("cpu")
+
     if arg == "cuda":
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA requested but not available.")
         return torch.device("cuda")
+
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def infer_num_classes(metadata: dict[str, Any], fallback: int | None = None) -> int:
+    for key in ["num_classes", "num_edge_global_classes"]:
+        if key in metadata:
+            return int(metadata[key])
+
+    try:
+        return int(metadata["answer_space"]["target_modes"]["edge_global"]["num_classes"])
+    except KeyError:
+        pass
+
+    if fallback is not None:
+        return int(fallback)
+
+    raise KeyError(
+        "Could not infer num_classes from metadata. Expected metadata['num_classes'], "
+        "metadata['num_edge_global_classes'], or answer_space.target_modes.edge_global.num_classes."
+    )
+
+
+def infer_num_count_classes(metadata: dict[str, Any], fallback: int | None = None) -> int:
+    if "head_label_maps" in metadata and "count" in metadata["head_label_maps"]:
+        return int(len(metadata["head_label_maps"]["count"]))
+
+    try:
+        return int(
+            len(metadata["answer_space"]["target_modes"]["edge_head_local"]["head_label_maps"]["count"])
+        )
+    except KeyError:
+        pass
+
+    try:
+        return int(
+            len(metadata["answer_space"]["target_modes"]["edge_multihead"]["head_label_maps"]["count"])
+        )
+    except KeyError:
+        pass
+
+    if fallback is not None:
+        return int(fallback)
+
+    raise KeyError("Could not infer num_count_classes from metadata.")
+
+
+def infer_count_head_id(metadata: dict[str, Any]) -> int:
+    head_to_id = metadata.get("head_to_id", {})
+
+    if "count" in head_to_id:
+        return int(head_to_id["count"])
+
+    # Fallback for the metadata generated by script 04.
+    return 3
+
+
+def infer_count_cap(metadata: dict[str, Any]) -> int | None:
+    if "count_cap" in metadata and metadata["count_cap"] is not None:
+        return int(metadata["count_cap"])
+
+    try:
+        count_cap = metadata["answer_space"]["count_cap"]
+        if count_cap is not None:
+            return int(count_cap)
+    except KeyError:
+        pass
+
+    return None
 
 
 def build_loaders(args: argparse.Namespace) -> dict[str, DataLoader]:
@@ -200,6 +314,7 @@ def build_loaders(args: argparse.Namespace) -> dict[str, DataLoader]:
     if args.overfit_samples > 0:
         n = min(args.overfit_samples, len(train_dataset))
         indices = list(range(n))
+
         train_dataset = Subset(train_dataset, indices)
         valid_dataset = Subset(
             FloodNetVQADataset(
@@ -212,6 +327,7 @@ def build_loaders(args: argparse.Namespace) -> dict[str, DataLoader]:
             indices,
         )
         test_dataset = valid_dataset
+
         print(f"Overfit mode enabled: using first {n} training samples for train/valid/test.")
 
     pin_memory = torch.cuda.is_available()
@@ -233,8 +349,6 @@ def build_loaders(args: argparse.Namespace) -> dict[str, DataLoader]:
         "drop_last": False,
     }
 
-    # Safe speedup for Colab/WSL when using worker processes.
-    # DataLoader rejects persistent_workers/prefetch_factor when num_workers == 0.
     if args.num_workers > 0:
         train_loader_kwargs["persistent_workers"] = True
         train_loader_kwargs["prefetch_factor"] = 2
@@ -248,25 +362,62 @@ def build_loaders(args: argparse.Namespace) -> dict[str, DataLoader]:
     }
 
 
-def build_criterion(args: argparse.Namespace, device: torch.device) -> nn.Module:
-    if not args.use_class_weights:
-        return nn.CrossEntropyLoss()
+def load_index_weights(
+    path: Path,
+    num_classes: int,
+    device: torch.device,
+    nested_key: str | None = None,
+) -> torch.Tensor:
+    if not path.exists():
+        raise FileNotFoundError(f"Class weights file not found: {path}")
 
-    if not args.class_weights.exists():
-        raise FileNotFoundError(f"Class weights file not found: {args.class_weights}")
+    weights_dict = load_json(path)
 
-    weights_dict = load_json(args.class_weights)
-    weights = torch.ones(args.num_classes, dtype=torch.float32)
+    if nested_key is not None and nested_key in weights_dict:
+        weights_dict = weights_dict[nested_key]
+
+    weights = torch.ones(num_classes, dtype=torch.float32)
 
     for label_str, weight in weights_dict.items():
         label = int(label_str)
-        if 0 <= label < args.num_classes:
+
+        if 0 <= label < num_classes:
             weights[label] = float(weight)
 
-    print("Using class weights:")
-    print(weights.tolist())
+    return weights.to(device)
 
-    return nn.CrossEntropyLoss(weight=weights.to(device))
+
+def build_main_criterion(args: argparse.Namespace, device: torch.device) -> nn.Module:
+    if args.loss_mode != "weighted_ce":
+        return nn.CrossEntropyLoss()
+
+    weights = load_index_weights(
+        path=args.class_weights,
+        num_classes=args.num_classes,
+        device=device,
+    )
+
+    print("Using edge_global class weights:")
+    print(weights.detach().cpu().tolist())
+
+    return nn.CrossEntropyLoss(weight=weights)
+
+
+def build_count_aux_criterion(args: argparse.Namespace, device: torch.device) -> nn.Module:
+    if args.count_aux_weights is None:
+        return nn.CrossEntropyLoss()
+
+    weights = load_index_weights(
+        path=args.count_aux_weights,
+        num_classes=args.num_count_classes,
+        device=device,
+        nested_key="count",
+    )
+
+    print("Using count auxiliary class weights:")
+    print(weights.detach().cpu().tolist())
+
+    return nn.CrossEntropyLoss(weight=weights)
 
 
 def autocast_context(device: torch.device, enabled: bool):
@@ -276,10 +427,83 @@ def autocast_context(device: torch.device, enabled: bool):
     )
 
 
+def forward_teacher(
+    model: nn.Module,
+    batch: dict[str, Any],
+    device: torch.device,
+    return_aux: bool,
+) -> torch.Tensor | dict[str, torch.Tensor]:
+    images = batch["image"].to(device, non_blocking=True)
+    question_tokens = batch["question_tokens"].to(device, non_blocking=True)
+    question_lengths = batch["question_length"].to(device, non_blocking=True)
+    question_template_ids = batch["question_template_id"].to(device, non_blocking=True)
+
+    return model(
+        images=images,
+        question_tokens=question_tokens,
+        question_lengths=question_lengths,
+        question_template_ids=question_template_ids,
+        return_aux=return_aux,
+    )
+
+
+def extract_logits(outputs: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
+    if isinstance(outputs, torch.Tensor):
+        return outputs
+
+    if "logits" not in outputs:
+        raise KeyError("Model output dict must contain key 'logits'.")
+
+    return outputs["logits"]
+
+
+def compute_loss(
+    outputs: torch.Tensor | dict[str, torch.Tensor],
+    batch: dict[str, Any],
+    main_criterion: nn.Module,
+    count_aux_criterion: nn.Module,
+    device: torch.device,
+    args: argparse.Namespace,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    targets = batch["target"].to(device, non_blocking=True)
+    logits = extract_logits(outputs)
+
+    main_loss = main_criterion(logits, targets)
+
+    if args.loss_mode != "count_aux":
+        aux_loss = logits.new_tensor(0.0)
+        total_loss = main_loss
+        return total_loss, main_loss, aux_loss, logits
+
+    if not isinstance(outputs, dict) or "count_logits" not in outputs:
+        raise KeyError(
+            "count_aux loss requires model output dict with key 'count_logits'."
+        )
+
+    count_logits = outputs["count_logits"]
+    head_ids = batch["head_id"].to(device, non_blocking=True)
+    count_targets = batch["target_edge_head"].to(device, non_blocking=True)
+
+    count_mask = head_ids == int(args.count_head_id)
+
+    if bool(count_mask.any()):
+        aux_loss = count_aux_criterion(
+            count_logits[count_mask],
+            count_targets[count_mask],
+        )
+    else:
+        aux_loss = logits.new_tensor(0.0)
+
+    total_loss = main_loss + float(args.count_aux_weight) * aux_loss
+
+    return total_loss, main_loss, aux_loss, logits
+
+
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
-    criterion: nn.Module,
+    main_criterion: nn.Module,
+    count_aux_criterion: nn.Module,
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
     device: torch.device,
@@ -289,24 +513,33 @@ def train_one_epoch(
     model.train()
 
     loss_meter = AverageMeter("train_loss")
+    main_loss_meter = AverageMeter("main_loss")
+    aux_loss_meter = AverageMeter("count_aux_loss")
+
     metrics = ClassificationMetrics(num_classes=args.num_classes)
     timer = Timer()
 
     for step, batch in enumerate(loader, start=1):
-        images = batch["image"].to(device, non_blocking=True)
-        question_tokens = batch["question_tokens"].to(device, non_blocking=True)
-        question_lengths = batch["question_length"].to(device, non_blocking=True)
         targets = batch["target"].to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
 
         with autocast_context(device, args.amp):
-            logits = model(
-                images=images,
-                question_tokens=question_tokens,
-                question_lengths=question_lengths,
+            outputs = forward_teacher(
+                model=model,
+                batch=batch,
+                device=device,
+                return_aux=(args.loss_mode == "count_aux"),
             )
-            loss = criterion(logits, targets)
+
+            loss, main_loss, aux_loss, logits = compute_loss(
+                outputs=outputs,
+                batch=batch,
+                main_criterion=main_criterion,
+                count_aux_criterion=count_aux_criterion,
+                device=device,
+                args=args,
+            )
 
         scaler.scale(loss).backward()
 
@@ -318,7 +551,10 @@ def train_one_epoch(
         scaler.update()
 
         batch_size = targets.size(0)
+
         loss_meter.update(float(loss.item()), n=batch_size)
+        main_loss_meter.update(float(main_loss.item()), n=batch_size)
+        aux_loss_meter.update(float(aux_loss.item()), n=batch_size)
 
         metrics.update(
             logits=logits.detach(),
@@ -329,7 +565,7 @@ def train_one_epoch(
 
         if step % args.log_interval == 0 or step == 1 or step == len(loader):
             current_metrics = metrics.compute()
-            current = current_metrics["overall"]
+            overall = current_metrics["overall"]
             by_head = current_metrics["by_head"]
 
             head_str = " | ".join(
@@ -341,19 +577,41 @@ def train_one_epoch(
                 f"Epoch {epoch:03d} | "
                 f"step {step:04d}/{len(loader):04d} | "
                 f"loss={loss_meter.avg:.4f} | "
-                f"acc={current['accuracy']:.4f} | "
+                f"main={main_loss_meter.avg:.4f} | "
+                f"aux={aux_loss_meter.avg:.4f} | "
+                f"acc={overall['accuracy']:.4f} | "
                 f"{head_str} | "
                 f"time={timer.elapsed_str()}"
             )
 
     result = metrics.compute()
     result["loss"] = loss_meter.avg
+    result["main_loss"] = main_loss_meter.avg
+    result["count_aux_loss"] = aux_loss_meter.avg
 
     return result
 
 
+def build_run_prefix(args: argparse.Namespace) -> str:
+    cap_tag = f"cap{args.count_cap}" if args.count_cap is not None else "capNA"
+    pretrained_tag = "" if args.pretrained else "_scratch"
+    aug_tag = "" if args.augment_train else "_noaug"
+
+    return (
+        f"teacher_{cap_tag}_{args.backbone}_{args.image_size}_"
+        f"{args.question_encoder}_{args.loss_mode}"
+        f"{pretrained_tag}{aug_tag}"
+    )
+
+
 def main() -> None:
     args = parse_args()
+
+    if args.use_class_weights:
+        args.loss_mode = "weighted_ce"
+
+    if args.count_aux_weight < 0:
+        raise ValueError("--count-aux-weight must be non-negative.")
 
     set_seed(args.seed)
 
@@ -362,13 +620,16 @@ def main() -> None:
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
 
-    class_weight_tag = "_cw" if args.use_class_weights else ""
-    aug_tag = "" if args.augment_train else "_noaug"
-    pretrained_tag = "" if args.pretrained else "_scratch"
-    run_prefix = (
-        f"teacher_{args.backbone}_{args.image_size}"
-        f"{class_weight_tag}{aug_tag}{pretrained_tag}"
-    )
+    metadata = load_json(args.metadata)
+
+    args.num_classes = infer_num_classes(metadata, fallback=args.num_classes)
+    args.num_count_classes = infer_num_count_classes(metadata, fallback=args.num_count_classes)
+    args.count_head_id = infer_count_head_id(metadata)
+    args.count_cap = infer_count_cap(metadata)
+
+    use_count_aux = args.loss_mode == "count_aux"
+
+    run_prefix = build_run_prefix(args)
 
     run_dir = make_run_dir(
         base_dir=args.runs_dir,
@@ -380,7 +641,10 @@ def main() -> None:
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
     config = vars(args).copy()
-    config = {k: str(v) if isinstance(v, Path) else v for k, v in config.items()}
+    config = {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in config.items()
+    }
     config["run_dir"] = str(run_dir)
     config["device"] = str(device)
 
@@ -389,22 +653,27 @@ def main() -> None:
     print("=" * 80)
     print("TinyDisasterVQA / Train Teacher")
     print("=" * 80)
-    print(f"Run dir:       {run_dir}")
-    print(f"Device:        {device}")
-    print(f"Backbone:      {args.backbone}")
-    print(f"Pretrained:    {args.pretrained}")
-    print(f"AMP:           {args.amp}")
-    print(f"Image size:    {args.image_size}")
-    print(f"Batch size:    {args.batch_size}")
-    print(f"Eval batch:    {args.eval_batch_size or args.batch_size}")
-    print(f"Augment train: {args.augment_train}")
-    print(f"Epochs:        {args.epochs}")
-    print(f"LR:            {args.lr}")
-    print(f"Class weights: {args.use_class_weights}")
-    print(f"Freeze image:  {args.freeze_image_encoder}")
+    print(f"Run dir:          {run_dir}")
+    print(f"Device:           {device}")
+    print(f"Backbone:         {args.backbone}")
+    print(f"Pretrained:       {args.pretrained}")
+    print(f"Question encoder: {args.question_encoder}")
+    print(f"Loss mode:        {args.loss_mode}")
+    print(f"Count aux weight: {args.count_aux_weight if use_count_aux else 0.0}")
+    print(f"AMP:              {args.amp}")
+    print(f"Image size:       {args.image_size}")
+    print(f"Batch size:       {args.batch_size}")
+    print(f"Eval batch:       {args.eval_batch_size or args.batch_size}")
+    print(f"Augment train:    {args.augment_train}")
+    print(f"Epochs:           {args.epochs}")
+    print(f"LR:               {args.lr}")
+    print(f"Weight decay:     {args.weight_decay}")
+    print(f"Freeze image:     {args.freeze_image_encoder}")
+    print(f"Count cap:        {args.count_cap}")
+    print(f"Num classes:      {args.num_classes}")
+    print(f"Count classes:    {args.num_count_classes}")
+    print(f"Count head id:    {args.count_head_id}")
     print()
-
-    metadata = load_json(args.metadata)
 
     loaders = build_loaders(args)
 
@@ -414,16 +683,21 @@ def main() -> None:
         pretrained=args.pretrained,
         num_classes=args.num_classes,
         freeze_image_encoder=args.freeze_image_encoder,
+        question_encoder=args.question_encoder,
         question_embed_dim=args.question_embed_dim,
         question_hidden_dim=args.question_hidden_dim,
+        template_embed_dim=args.template_embed_dim,
         fusion_hidden_dim=args.fusion_hidden_dim,
         fusion_dropout=args.fusion_dropout,
+        use_count_aux=use_count_aux,
+        num_count_classes=args.num_count_classes,
     ).to(device)
 
     print(describe_model(model))
     print()
 
-    criterion = build_criterion(args, device)
+    main_criterion = build_main_criterion(args, device)
+    count_aux_criterion = build_count_aux_criterion(args, device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -447,7 +721,6 @@ def main() -> None:
     completed_epoch = 0
 
     metrics_path = run_dir / "metrics.jsonl"
-
     total_timer = Timer()
 
     for epoch in range(1, args.epochs + 1):
@@ -461,7 +734,8 @@ def main() -> None:
         train_metrics = train_one_epoch(
             model=model,
             loader=loaders["train"],
-            criterion=criterion,
+            main_criterion=main_criterion,
+            count_aux_criterion=count_aux_criterion,
             optimizer=optimizer,
             scaler=scaler,
             device=device,
@@ -474,6 +748,7 @@ def main() -> None:
             dataloader=loaders["valid"],
             device=device,
             num_classes=args.num_classes,
+            criterion=main_criterion,
         )
 
         scheduler.step()
@@ -527,6 +802,8 @@ def main() -> None:
             "epoch": epoch,
             "lr": optimizer.param_groups[0]["lr"],
             "train_loss": train_metrics["loss"],
+            "train_main_loss": train_metrics.get("main_loss", train_metrics["loss"]),
+            "train_count_aux_loss": train_metrics.get("count_aux_loss", 0.0),
             "train_acc": train_acc,
             "valid_loss": valid_metrics["loss"],
             "valid_acc": valid_acc,
@@ -572,7 +849,14 @@ def main() -> None:
     print("Evaluating best checkpoint on test set")
     print("=" * 80)
 
-    best_ckpt = torch.load(checkpoints_dir / "best.pt", map_location=device)
+    best_path = checkpoints_dir / "best.pt"
+    if not best_path.exists():
+        raise FileNotFoundError(
+            f"Best checkpoint was not saved: {best_path}. "
+            "This should not happen unless training had zero epochs."
+        )
+
+    best_ckpt = torch.load(best_path, map_location=device)
     model.load_state_dict(best_ckpt["model_state_dict"])
 
     test_metrics = evaluate_classifier(
@@ -580,6 +864,7 @@ def main() -> None:
         dataloader=loaders["test"],
         device=device,
         num_classes=args.num_classes,
+        criterion=main_criterion,
     )
 
     save_json(test_metrics, run_dir / "test_metrics.json")
@@ -597,6 +882,20 @@ def main() -> None:
         },
         config=config,
     )
+
+    final_summary = {
+        "run_dir": str(run_dir),
+        "best_valid_acc": best_valid_acc,
+        "best_epoch": best_epoch,
+        "test_acc": float(test_metrics["overall"]["accuracy"]),
+        "count_cap": args.count_cap,
+        "num_classes": args.num_classes,
+        "question_encoder": args.question_encoder,
+        "loss_mode": args.loss_mode,
+        "backbone": args.backbone,
+        "image_size": args.image_size,
+    }
+    save_json(final_summary, run_dir / "final_summary.json")
 
     print()
     print(format_metrics(test_metrics, prefix="test"))
