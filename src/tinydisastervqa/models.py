@@ -571,7 +571,7 @@ def build_teacher_from_metadata(
 # =============================================================================
 
 
-StudentVariant = Literal["tdm_s", "tdm_m", "tdm_l", "tdm_fast"]
+StudentVariant = Literal["tdm_xs", "tdm_s", "tdm_m", "tdm_l", "tdm_fast"]
 ImageBlockType = Literal["dsconv", "conv"]
 
 EDGE_HEADS: tuple[str, str, str, str] = ("binary", "condition", "density", "count")
@@ -612,6 +612,17 @@ class TDMConfig:
 
     num_classes: int = 14
 
+@dataclass
+class TDMXSConfig(TDMConfig):
+    variant: StudentVariant = "tdm_xs"
+    num_question_templates: int = 31
+    question_template_embed_dim: int = 8
+    image_channels: tuple[int, ...] = (8, 16, 24, 32, 48)
+    image_block_type: ImageBlockType = "dsconv"
+    fusion_hidden_dim: int = 64
+    fusion_dropout: float = 0.05
+    fusion_layers: int = 1
+    num_classes: int = 14
 
 @dataclass
 class TDMSConfig(TDMConfig):
@@ -666,6 +677,14 @@ class TDMFastConfig(TDMConfig):
 
 
 TDM_VARIANT_DEFAULTS: dict[StudentVariant, dict[str, object]] = {
+    "tdm_xs": {
+        "question_template_embed_dim": 8,
+        "image_channels": (8, 16, 24, 32, 48),
+        "image_block_type": "dsconv",
+        "fusion_hidden_dim": 64,
+        "fusion_dropout": 0.05,
+        "fusion_layers": 1,
+    },
     "tdm_s": {
         "question_template_embed_dim": 16,
         "image_channels": (12, 24, 48, 64, 96),
@@ -909,6 +928,9 @@ class TDMVQA(nn.Module):
         return logits
 
 
+class TDMXSVQA(TDMVQA):
+    pass
+
 class TDMSVQA(TDMVQA):
     pass
 
@@ -1040,6 +1062,9 @@ def build_tdm_from_metadata(
         fusion_layers=fusion_layers,
     )
 
+    if variant == "tdm_xs":
+        return TDMXSVQA(config)
+
     if variant == "tdm_s":
         return TDMSVQA(config)
 
@@ -1054,6 +1079,17 @@ def build_tdm_from_metadata(
 
     raise ValueError(f"Unknown TDM variant: {variant}")
 
+def build_tdm_xs_from_metadata(
+    metadata: dict,
+    num_classes: int | None = None,
+    num_question_templates: int | None = None,
+) -> TDMXSVQA:
+    return build_tdm_from_metadata(
+        metadata=metadata,
+        variant="tdm_xs",
+        num_classes=num_classes,
+        num_question_templates=num_question_templates,
+    )  # type: ignore[return-value]
 
 def build_tdm_s_from_metadata(
     metadata: dict,

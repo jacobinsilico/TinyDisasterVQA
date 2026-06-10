@@ -148,7 +148,7 @@ def parse_args() -> argparse.Namespace:
         "--student-variant",
         type=str,
         default="tdm_m",
-        choices=["tdm_s", "tdm_m", "tdm_l", "tdm_fast"],
+        choices=["tdm_xs", "tdm_s", "tdm_m", "tdm_l", "tdm_fast"],
         help="Student model variant.",
     )
     parser.add_argument(
@@ -156,6 +156,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         choices=[
+            "xs",
             "s",
             "m",
             "l",
@@ -242,6 +243,7 @@ def parse_args() -> argparse.Namespace:
 
 def normalize_student_variant(args: argparse.Namespace) -> None:
     alias = {
+        "xs": "tdm_xs",
         "s": "tdm_s",
         "m": "tdm_m",
         "l": "tdm_l",
