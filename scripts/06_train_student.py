@@ -482,6 +482,41 @@ def infer_teacher_use_count_aux(
     return False
 
 
+def adapt_legacy_template_embedding_state_dict(
+    state_dict: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    """
+    Converts old teacher checkpoints:
+
+        question_encoder.embedding.weight  [num_templates, embed_dim]
+
+    into new one-hot + Linear format:
+
+        question_encoder.linear.weight     [embed_dim, num_templates]
+        question_encoder.linear.bias       [embed_dim]
+
+    This is mathematically equivalent to embedding lookup with zero bias.
+    """
+    old_key = "question_encoder.embedding.weight"
+    new_weight_key = "question_encoder.linear.weight"
+    new_bias_key = "question_encoder.linear.bias"
+
+    if old_key in state_dict and new_weight_key not in state_dict:
+        embedding_weight = state_dict.pop(old_key)
+
+        # nn.Linear computes y = x @ W.T + b.
+        # one_hot @ embedding_weight == Linear(one_hot) with W = embedding_weight.T
+        state_dict[new_weight_key] = embedding_weight.T.contiguous()
+        state_dict[new_bias_key] = torch.zeros(
+            embedding_weight.shape[1],
+            dtype=embedding_weight.dtype,
+            device=embedding_weight.device,
+        )
+
+        print("Adapted legacy teacher checkpoint: embedding.weight -> linear.weight/bias")
+
+    return state_dict
+
 def build_teacher_for_kd(
     args: argparse.Namespace,
     metadata: dict[str, Any],
@@ -593,7 +628,10 @@ def build_teacher_for_kd(
         num_count_classes=num_count_classes,
     ).to(device)
 
-    teacher.load_state_dict(checkpoint["model_state_dict"], strict=True)
+    state_dict = adapt_legacy_template_embedding_state_dict(
+    checkpoint["model_state_dict"]
+    )
+    teacher.load_state_dict(state_dict, strict=True)
     teacher.eval()
 
     for param in teacher.parameters():
