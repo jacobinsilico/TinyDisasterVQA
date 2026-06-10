@@ -49,29 +49,44 @@ from tinydisastervqa.models import (  # noqa: E402
 
 class SingleHeadExportWrapper(nn.Module):
     """
-    ONNX wrapper for single-head TDM models.
+    GAP9/NNTool-friendly ONNX wrapper for single-head TDM models.
+
+    Instead of exporting question_template_id -> OneHot -> Linear,
+    this wrapper takes the one-hot template vector directly.
 
     Inputs:
       image: [1, 3, H, W], float32
-      question_template_id: [1], int64
+      question_template_onehot: [1, num_question_templates], float32
 
     Output:
-      logits: [1, 19], float32
+      logits: [1, num_classes], float32
     """
 
     def __init__(self, model: TDMVQA) -> None:
         super().__init__()
         self.model = model
 
+        if not hasattr(self.model.question_encoder, "linear"):
+            raise AttributeError(
+                "Expected model.question_encoder.linear. "
+                "This wrapper assumes one_hot + Linear template encoder."
+            )
+
     def forward(
         self,
         image: torch.Tensor,
-        question_template_id: torch.Tensor,
+        question_template_onehot: torch.Tensor,
     ) -> torch.Tensor:
-        return self.model(
-            images=image,
-            question_template_ids=question_template_id,
+        image_features = self.model.image_encoder(image)
+
+        question_features = self.model.question_encoder.linear(
+            question_template_onehot.float()
         )
+
+        fused = torch.cat([image_features, question_features], dim=1)
+        logits = self.model.classifier(fused)
+
+        return logits
 
 
 class MultiHeadExportWrapper(nn.Module):
@@ -392,7 +407,14 @@ def export_one(
     head_type = export_config["head_type"]
 
     dummy_image = torch.randn(1, 3, image_size, image_size, dtype=torch.float32)
-    dummy_question_template_id = torch.tensor([0], dtype=torch.long)
+    num_question_templates = export_config["num_question_templates"]
+
+    dummy_question_template_onehot = torch.zeros(
+        1,
+        num_question_templates,
+        dtype=torch.float32,
+    )
+    dummy_question_template_onehot[0, 0] = 1.0
 
     args.onnx_dir.mkdir(parents=True, exist_ok=True)
     onnx_path = args.onnx_dir / checkpoint_path.with_suffix(".onnx").name
@@ -406,13 +428,13 @@ def export_one(
         dummy_edge_head_id = torch.tensor([0], dtype=torch.long)
 
         input_names = ["image", "question_template_id", "edge_head_id"]
-        inputs = (dummy_image, dummy_question_template_id, dummy_edge_head_id)
+        inputs = (dummy_image, dummy_question_template_onehot, dummy_edge_head_id)
 
     elif head_type == "single":
         wrapper = SingleHeadExportWrapper(model).eval()
 
-        input_names = ["image", "question_template_id"]
-        inputs = (dummy_image, dummy_question_template_id)
+        input_names = ["image", "question_template_onehot"]
+        inputs = (dummy_image, dummy_question_template_onehot)
 
     else:
         raise ValueError(f"Unknown head_type: {head_type}")

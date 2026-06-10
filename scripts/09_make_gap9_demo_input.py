@@ -13,15 +13,22 @@ Final v2 deployment defaults:
   - image size: 128
   - classes:    14 cap5 edge_global classes
 
-Generated files:
-  Input_1.bin              image input for GAP9 app
-  Input_2.bin              question_template_id input for GAP9 app
-  Input_1_float32.bin      debug/reference preprocessed float32 image
-  Input_1_uint8.bin        debug/reference quantized uint8 image
-  demo_expected.json       row info + PyTorch/ONNX predictions
+Important v2 detail:
+  The exported ONNX / NNTool graph uses:
+    Input_1.bin = image input [1, 3, 128, 128]
+    Input_2.bin = question_template_onehot [1, 31]
 
-By default, Input_1.bin is written as uint8 using the provided input
-quantization parameters. This matches the earlier GAP9 pipeline behavior.
+  PyTorch reference still uses question_template_id [1].
+  ONNX/GAP9 input uses question_template_onehot [1, 31].
+
+Generated files:
+  Input_1.bin                         GAP9 image input
+  Input_2.bin                         GAP9 question one-hot input
+  Input_1_float32.bin                 debug/reference preprocessed float32 image
+  Input_1_uint8.bin                   debug/reference quantized uint8 image
+  Input_2_onehot_float32.bin          debug/reference one-hot float32 question input
+  Input_2_question_template_id.bin    debug/reference int64 template id
+  demo_expected.json                  row info + PyTorch/ONNX predictions
 
 Example:
 
@@ -31,13 +38,15 @@ For XS baseline:
 
   PYTHONPATH=src python scripts/09_make_gap9_demo_input.py \\
     --checkpoint checkpoints/tdm_xs_128_ce_best.pt \\
-    --onnx onnx/tdm_xs_128_ce_best.onnx
+    --onnx onnx/tdm_xs_128_ce_best.onnx \\
+    --output-dir gap9_generated_final/tdm_xs_128_ce_best
 
 Multiple samples:
 
   PYTHONPATH=src python scripts/09_make_gap9_demo_input.py \\
     --num-samples 20 \\
-    --edge-head count
+    --edge-head count \\
+    --force
 """
 
 from __future__ import annotations
@@ -183,7 +192,7 @@ def parse_args() -> argparse.Namespace:
         default="uint8",
         help=(
             "Format used for Input_1.bin. "
-            "uint8 is the default because the GAP9 generated app usually expects quantized input."
+            "uint8 is the default because the GAP9 generated app usually expects quantized image input."
         ),
     )
     p.add_argument(
@@ -192,7 +201,7 @@ def parse_args() -> argparse.Namespace:
         default=0.01865844801068306,
         help=(
             "Input image quantization scale used when --input-format uint8. "
-            "Update this if NNTool reports a different input quantization."
+            "Update this if NNTool reports a different image input quantization."
         ),
     )
     p.add_argument(
@@ -201,14 +210,44 @@ def parse_args() -> argparse.Namespace:
         default=114,
         help=(
             "Input image quantization zero-point used when --input-format uint8. "
-            "Update this if NNTool reports a different input quantization."
+            "Update this if NNTool reports a different image input quantization."
         ),
+    )
+
+    p.add_argument(
+        "--question-input-format",
+        choices=("float32", "uint8"),
+        default="float32",
+        help=(
+            "Format used for Input_2.bin. "
+            "Default is float32 one-hot [1,31], matching the exported ONNX input."
+        ),
+    )
+    p.add_argument(
+        "--question-input-scale",
+        type=float,
+        default=1.0,
+        help="Question one-hot quantization scale used only when --question-input-format uint8.",
+    )
+    p.add_argument(
+        "--question-input-zero-point",
+        type=int,
+        default=0,
+        help="Question one-hot quantization zero-point used only when --question-input-format uint8.",
     )
 
     p.add_argument(
         "--force",
         action="store_true",
         help="Delete existing demo_inputs subdirectory before writing multiple samples.",
+    )
+    p.add_argument(
+        "--no-backup-existing-inputs",
+        action="store_true",
+        help=(
+            "Do not back up existing Input_1.bin/Input_2.bin before overwriting them. "
+            "By default, existing NNTool-generated inputs are backed up."
+        ),
     )
 
     return p.parse_args()
@@ -374,6 +413,21 @@ def preprocess_image(path: Path, image_size: int) -> np.ndarray:
     return arr.astype(np.float32)
 
 
+def make_question_onehot(
+    question_template_id: int,
+    num_question_templates: int,
+) -> np.ndarray:
+    if question_template_id < 0 or question_template_id >= num_question_templates:
+        raise ValueError(
+            f"question_template_id={question_template_id} outside "
+            f"[0, {num_question_templates - 1}]"
+        )
+
+    onehot = np.zeros((1, num_question_templates), dtype=np.float32)
+    onehot[0, question_template_id] = 1.0
+    return onehot
+
+
 def parse_optional_int(value: str | None) -> int | None:
     if value is None or value == "":
         return None
@@ -415,7 +469,7 @@ def row_matches_filters(row: dict[str, str], args: argparse.Namespace) -> bool:
     return True
 
 
-def row_is_usable(row: dict[str, str], dataset_root: Path) -> bool:
+def row_is_usable(row: dict[str, str], dataset_root: Path, num_question_templates: int) -> bool:
     try:
         _ = resolve_image_path(row, dataset_root)
     except FileNotFoundError:
@@ -425,7 +479,7 @@ def row_is_usable(row: dict[str, str], dataset_root: Path) -> bool:
     if qtid is None:
         return False
 
-    return 0 <= qtid < 31
+    return 0 <= qtid < num_question_templates
 
 
 def load_selected_rows(
@@ -452,7 +506,7 @@ def load_selected_rows(
         if not row_matches_filters(row, args):
             continue
 
-        if not row_is_usable(row, dataset_root):
+        if not row_is_usable(row, dataset_root, args.num_question_templates):
             continue
 
         selected.append((idx, row))
@@ -478,6 +532,16 @@ def quantize_image_uint8(
     return image_q
 
 
+def quantize_question_uint8(
+    qonehot_np: np.ndarray,
+    question_input_scale: float,
+    question_input_zero_point: int,
+) -> np.ndarray:
+    q_q = np.round(qonehot_np / question_input_scale + question_input_zero_point)
+    q_q = np.clip(q_q, 0, 255).astype(np.uint8)
+    return q_q
+
+
 def run_pytorch(
     model: torch.nn.Module,
     image_np: np.ndarray,
@@ -497,7 +561,7 @@ def run_pytorch(
 def run_onnx(
     onnx_path: Path,
     image_np: np.ndarray,
-    qtid_np: np.ndarray,
+    qonehot_np: np.ndarray,
 ) -> tuple[int | None, np.ndarray | None, str | None]:
     try:
         import onnxruntime as ort
@@ -516,7 +580,7 @@ def run_onnx(
 
         feed = {
             inputs[0].name: image_np,
-            inputs[1].name: qtid_np,
+            inputs[1].name: qonehot_np,
         }
 
         outs = session.run(None, feed)
@@ -529,6 +593,19 @@ def run_onnx(
         return None, None, str(exc)
 
 
+def backup_existing_inputs(sample_dir: Path) -> None:
+    """
+    Preserve NNTool-generated input binaries before overwriting them with our demo sample.
+    This is useful because script 08 already creates Input_1.bin/Input_2.bin.
+    """
+    for filename in ("Input_1.bin", "Input_2.bin"):
+        path = sample_dir / filename
+        backup = sample_dir / f"nntool_original_{filename}"
+
+        if path.exists() and not backup.exists():
+            shutil.copy2(path, backup)
+
+
 def write_one_sample(
     *,
     sample_dir: Path,
@@ -538,17 +615,26 @@ def write_one_sample(
     image_np: np.ndarray,
     image_q: np.ndarray,
     qtid_np: np.ndarray,
+    qonehot_np: np.ndarray,
+    qonehot_q: np.ndarray,
     input_format: str,
+    question_input_format: str,
     input_scale: float,
     input_zero_point: int,
+    question_input_scale: float,
+    question_input_zero_point: int,
     pt_argmax: int,
     pt_logits: np.ndarray,
     onnx_argmax: int | None,
     onnx_logits: np.ndarray | None,
     onnx_error: str | None,
     model_config: dict[str, Any],
+    backup_existing: bool,
 ) -> dict[str, Any]:
     sample_dir.mkdir(parents=True, exist_ok=True)
+
+    if backup_existing:
+        backup_existing_inputs(sample_dir)
 
     if input_format == "uint8":
         input_1 = image_q
@@ -557,15 +643,25 @@ def write_one_sample(
     else:
         raise ValueError(f"Unknown input_format: {input_format}")
 
+    if question_input_format == "float32":
+        input_2 = qonehot_np
+    elif question_input_format == "uint8":
+        input_2 = qonehot_q
+    else:
+        raise ValueError(f"Unknown question_input_format: {question_input_format}")
+
     input_1_path = sample_dir / "Input_1.bin"
     input_2_path = sample_dir / "Input_2.bin"
 
     input_1_path.write_bytes(input_1.tobytes())
-    input_2_path.write_bytes(qtid_np.tobytes())
+    input_2_path.write_bytes(input_2.tobytes())
 
-    # Always save debug copies.
+    # Always save debug/reference copies.
     (sample_dir / "Input_1_float32.bin").write_bytes(image_np.tobytes())
     (sample_dir / "Input_1_uint8.bin").write_bytes(image_q.tobytes())
+    (sample_dir / "Input_2_onehot_float32.bin").write_bytes(qonehot_np.tobytes())
+    (sample_dir / "Input_2_onehot_uint8.bin").write_bytes(qonehot_q.tobytes())
+    (sample_dir / "Input_2_question_template_id.bin").write_bytes(qtid_np.tobytes())
 
     target = get_target(row)
     answer = get_answer_string(row)
@@ -598,12 +694,20 @@ def write_one_sample(
         "input_1_dtype_written": str(input_1.dtype),
         "input_1_bytes": input_1_path.stat().st_size,
         "input_2_file": "Input_2.bin",
-        "input_2_shape": list(qtid_np.shape),
-        "input_2_dtype": str(qtid_np.dtype),
+        "input_2_format": question_input_format,
+        "input_2_shape_onehot_reference": list(qonehot_np.shape),
+        "input_2_dtype_onehot_reference": str(qonehot_np.dtype),
+        "input_2_shape_written": list(input_2.shape),
+        "input_2_dtype_written": str(input_2.dtype),
         "input_2_bytes": input_2_path.stat().st_size,
-        "input_quantization": {
+        "input_image_quantization": {
             "scale": input_scale,
             "zero_point": input_zero_point,
+        },
+        "input_question_quantization": {
+            "scale": question_input_scale,
+            "zero_point": question_input_zero_point,
+            "used_only_if_question_input_format_is_uint8": True,
         },
         "model_config": model_config,
     }
@@ -620,16 +724,21 @@ def copy_primary_sample_to_root(sample_dir: Path, output_dir: Path) -> None:
         "Input_2.bin",
         "Input_1_float32.bin",
         "Input_1_uint8.bin",
+        "Input_2_onehot_float32.bin",
+        "Input_2_onehot_uint8.bin",
+        "Input_2_question_template_id.bin",
         "demo_expected.json",
     ):
-        shutil.copy2(sample_dir / filename, output_dir / filename)
+        src = sample_dir / filename
+        if src.exists():
+            shutil.copy2(src, output_dir / filename)
 
 
-def print_sample_summary(info: dict[str, Any], output_dir: Path) -> None:
+def print_sample_summary(info: dict[str, Any], sample_dir: Path) -> None:
     print("-" * 80)
-    print(f"Sample dir:           {output_dir}")
-    print(f"Input_1.bin bytes:    {info['input_1_bytes']}")
-    print(f"Input_2.bin bytes:    {info['input_2_bytes']}")
+    print(f"Sample dir:           {sample_dir}")
+    print(f"Input_1.bin bytes:    {info['input_1_bytes']} ({info['input_1_format']})")
+    print(f"Input_2.bin bytes:    {info['input_2_bytes']} ({info['input_2_format']})")
     print(f"Row index:            {info['row_index']}")
     print(f"Image:                {info['image_path']}")
     print(f"Question:             {info['question']}")
@@ -653,6 +762,9 @@ def main() -> None:
 
     if not args.metadata.exists():
         raise FileNotFoundError(f"Missing metadata: {args.metadata}")
+
+    if not args.csv.exists():
+        raise FileNotFoundError(f"Missing CSV: {args.csv}")
 
     output_dir = resolve_output_dir(args)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -680,16 +792,17 @@ def main() -> None:
     print("=" * 80)
     print("TinyDisasterVQA / GAP9 demo input generation")
     print("=" * 80)
-    print(f"Checkpoint:  {args.checkpoint}")
-    print(f"ONNX:        {args.onnx}")
-    print(f"Metadata:    {args.metadata}")
-    print(f"CSV:         {args.csv}")
-    print(f"Dataset:     {args.dataset_root}")
-    print(f"Output dir:  {output_dir}")
-    print(f"Image size:  {model_config['image_size']}")
-    print(f"Input fmt:   {args.input_format}")
-    print(f"Input scale: {args.input_scale}")
-    print(f"Input zp:    {args.input_zero_point}")
+    print(f"Checkpoint:       {args.checkpoint}")
+    print(f"ONNX:             {args.onnx}")
+    print(f"Metadata:         {args.metadata}")
+    print(f"CSV:              {args.csv}")
+    print(f"Dataset:          {args.dataset_root}")
+    print(f"Output dir:       {output_dir}")
+    print(f"Image size:       {model_config['image_size']}")
+    print(f"Input_1 format:   {args.input_format}")
+    print(f"Input_1 scale:    {args.input_scale}")
+    print(f"Input_1 zp:       {args.input_zero_point}")
+    print(f"Input_2 format:   {args.question_input_format}")
     print()
     print(describe_model(model))
     print()
@@ -702,7 +815,7 @@ def main() -> None:
     else:
         demo_inputs_dir = output_dir
 
-    all_infos = []
+    all_infos: list[dict[str, Any]] = []
 
     for sample_idx, (row_idx, row) in enumerate(selected_rows):
         image_path = resolve_image_path(row, args.dataset_root)
@@ -716,9 +829,21 @@ def main() -> None:
             input_scale=args.input_scale,
             input_zero_point=args.input_zero_point,
         )
+
+        question_template_id = int(row["question_template_id"])
+
         qtid_np = np.array(
-            [int(row["question_template_id"])],
+            [question_template_id],
             dtype=np.int64,
+        )
+        qonehot_np = make_question_onehot(
+            question_template_id=question_template_id,
+            num_question_templates=int(model_config["num_question_templates"]),
+        )
+        qonehot_q = quantize_question_uint8(
+            qonehot_np=qonehot_np,
+            question_input_scale=args.question_input_scale,
+            question_input_zero_point=args.question_input_zero_point,
         )
 
         pt_argmax, pt_logits = run_pytorch(
@@ -730,7 +855,7 @@ def main() -> None:
         onnx_argmax, onnx_logits, onnx_error = run_onnx(
             onnx_path=args.onnx,
             image_np=image_np,
-            qtid_np=qtid_np,
+            qonehot_np=qonehot_np,
         )
 
         if args.num_samples == 1:
@@ -746,15 +871,21 @@ def main() -> None:
             image_np=image_np,
             image_q=image_q,
             qtid_np=qtid_np,
+            qonehot_np=qonehot_np,
+            qonehot_q=qonehot_q,
             input_format=args.input_format,
+            question_input_format=args.question_input_format,
             input_scale=args.input_scale,
             input_zero_point=args.input_zero_point,
+            question_input_scale=args.question_input_scale,
+            question_input_zero_point=args.question_input_zero_point,
             pt_argmax=pt_argmax,
             pt_logits=pt_logits,
             onnx_argmax=onnx_argmax,
             onnx_logits=onnx_logits,
             onnx_error=onnx_error,
             model_config=model_config,
+            backup_existing=(not args.no_backup_existing_inputs),
         )
 
         all_infos.append(info)
@@ -762,7 +893,7 @@ def main() -> None:
         if args.num_samples > 1 and sample_idx == 0:
             copy_primary_sample_to_root(sample_dir=sample_dir, output_dir=output_dir)
 
-        print_sample_summary(info=info, output_dir=sample_dir)
+        print_sample_summary(info=info, sample_dir=sample_dir)
 
     summary_path = output_dir / "demo_expected_all.json"
     with summary_path.open("w", encoding="utf-8") as f:
@@ -777,12 +908,14 @@ def main() -> None:
     print(f"Primary expected:     {output_dir / 'demo_expected.json'}")
     print(f"All expected:         {summary_path}")
 
-    if args.input_format == "uint8":
-        print()
-        print("[NOTE] Input_1.bin was written as uint8 using:")
-        print(f"       scale={args.input_scale}")
-        print(f"       zero_point={args.input_zero_point}")
-        print("       If NNTool reports different input quantization, rerun with updated values.")
+    print()
+    print("[CHECK]")
+    print("Expected default file sizes:")
+    print("  Input_1.bin = 49152 bytes if uint8 image input")
+    print("  Input_2.bin = 124 bytes if float32 one-hot question input")
+    print()
+    print("Run:")
+    print(f"  stat -c \"%n %s bytes\" {output_dir / 'Input_1.bin'} {output_dir / 'Input_2.bin'}")
 
 
 if __name__ == "__main__":

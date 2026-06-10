@@ -1,0 +1,38 @@
+[  2%] Built target pmsis_printf
+[  4%] Built target pulp_allocator
+[  7%] Built target freertos_libs
+[  9%] Built target fll_pmu_lib
+[ 43%] Built target pmsis
+[ 47%] Built target pmsis_backend
+[ 59%] Built target freertos
+[ 62%] Built target gap_lib
+[100%] Built target tdm_fast_128_ce_best
+[100%] Built target image
+[100%] Built target flash
+
+
+	 *** NNTOOL tdm_fast_128_ce_best Example ***
+
+Entering main controller
+FC Frequency = 370000000 Hz CL Frequency = 370000000 Hz PERIPH Frequency = 370000000 Hz
+Voltage: 800mV
+Constructor
+Call cluster
+Start timer
+Runner completed: 0
+
+                             S21__linear_Gemm: Cycles:         2402, Cyc%:   0.5%, Operations:          496, Op%:   0.0%, Operations/Cycle: 0.206495
+S5__image_encoder_encoder_encoder_0_block_block_0_Conv_fusion: Cycles:       208339, Cyc%:  43.9%, Operations:      1769472, Op%:  12.0%, Operations/Cycle: 8.493235
+S8__image_encoder_encoder_encoder_1_block_block_0_Conv_fusion: Cycles:        98176, Cyc%:  20.7%, Operations:      4718592, Op%:  31.9%, Operations/Cycle: 48.062580
+S11__image_encoder_encoder_encoder_2_block_block_0_Conv_fusion: Cycles:        88240, Cyc%:  18.6%, Operations:      4718592, Op%:  31.9%, Operations/Cycle: 53.474525
+S14__image_encoder_encoder_encoder_3_block_block_0_Conv_fusion: Cycles:        67179, Cyc%:  14.1%, Operations:      3538944, Op%:  24.0%, Operations/Cycle: 52.679321
+S16__image_encoder_encoder_encoder_4_GlobalAveragePool_trans: Cycles:         3090, Cyc%:   0.7%, Operations:         6144, Op%:   0.0%, Operations/Cycle: 1.988350
+S17__image_encoder_encoder_encoder_4_GlobalAveragePool: Cycles:         2111, Cyc%:   0.4%, Operations:         6144, Op%:   0.0%, Operations/Cycle: 2.910469
+     S26__classifier_classifier_0_Gemm_fusion: Cycles:         3828, Cyc%:   0.8%, Operations:        10752, Op%:   0.1%, Operations/Cycle: 2.808777
+            S29__classifier_classifier_3_Gemm: Cycles:         1526, Cyc%:   0.3%, Operations:         1344, Op%:   0.0%, Operations/Cycle: 0.880734
+                                      IO_Wait: Cycles:            0, Cyc%:   0.0%, Operations:            0, Op%:   0.0%, Operations/Cycle: nan
+
+                                        Total: Cycles:       474891, Cyc%: 100.0%, Operations:     14770480, Op%: 100.0%, Operations/Cycle: 31.102884
+
+Ended
+[100%] Built target run

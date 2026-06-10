@@ -233,13 +233,23 @@ runs/
 docs/
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
 .ipynb_checkpoints/
-*:Zone.Identifier
 
-# GAP9 / deployment generated artifacts
+# Dataset
+dataset/
+
+# Generated preprocessing/training outputs
+outputs/
+
+# Old generated deployment / benchmark artifacts
 benchmark_logs/
 benchmark_logs_uint8_fixed/
 gap9_generated/
 submission_artifacts_final/
-checkpoints/
+
+# Final generated GAP9 build artifacts
+gap9_generated_final/
+
+# Optional: ignore all benchmark folders except final text logs
+# If benchmark_logs_final only contains small txt logs, keep it tracked.

@@ -1,0 +1,43 @@
+[  2%] Built target pmsis_printf
+[  4%] Built target pulp_allocator
+[  7%] Built target freertos_libs
+[  9%] Built target fll_pmu_lib
+[ 43%] Built target pmsis
+[ 47%] Built target pmsis_backend
+[ 59%] Built target freertos
+[ 62%] Built target gap_lib
+[100%] Built target tdm_xs_128_ce_best
+[100%] Built target image
+[100%] Built target flash
+
+
+	 *** NNTOOL tdm_xs_128_ce_best Example ***
+
+Entering main controller
+FC Frequency = 370000000 Hz CL Frequency = 370000000 Hz PERIPH Frequency = 370000000 Hz
+Voltage: 800mV
+Constructor
+Call cluster
+Start timer
+Runner completed: 0
+
+                             S36__linear_Gemm: Cycles:         2214, Cyc%:   1.0%, Operations:          248, Op%:   0.0%, Operations/Cycle: 0.112014
+S5__image_encoder_encoder_encoder_0_block_block_0_Conv_fusion: Cycles:       138931, Cyc%:  60.0%, Operations:       884736, Op%:  66.9%, Operations/Cycle: 6.368168
+S8__image_encoder_encoder_encoder_1_block_block_0_Conv_fusion: Cycles:        38024, Cyc%:  16.4%, Operations:        73728, Op%:   5.6%, Operations/Cycle: 1.938986
+S11__image_encoder_encoder_encoder_1_block_block_3_Conv_fusion: Cycles:        10709, Cyc%:   4.6%, Operations:       131072, Op%:   9.9%, Operations/Cycle: 12.239425
+S14__image_encoder_encoder_encoder_2_block_block_0_Conv_fusion: Cycles:        14698, Cyc%:   6.4%, Operations:        36864, Op%:   2.8%, Operations/Cycle: 2.508096
+S17__image_encoder_encoder_encoder_2_block_block_3_Conv_fusion: Cycles:         4222, Cyc%:   1.8%, Operations:        98304, Op%:   7.4%, Operations/Cycle: 23.283752
+S20__image_encoder_encoder_encoder_3_block_block_0_Conv_fusion: Cycles:         7039, Cyc%:   3.0%, Operations:        13824, Op%:   1.0%, Operations/Cycle: 1.963915
+S23__image_encoder_encoder_encoder_3_block_block_3_Conv_fusion: Cycles:         2748, Cyc%:   1.2%, Operations:        49152, Op%:   3.7%, Operations/Cycle: 17.886463
+S26__image_encoder_encoder_encoder_4_block_block_0_Conv_fusion: Cycles:         3215, Cyc%:   1.4%, Operations:         4608, Op%:   0.3%, Operations/Cycle: 1.433282
+S29__image_encoder_encoder_encoder_4_block_block_3_Conv_fusion: Cycles:         2412, Cyc%:   1.0%, Operations:        24576, Op%:   1.9%, Operations/Cycle: 10.189054
+S31__image_encoder_encoder_encoder_5_GlobalAveragePool_trans: Cycles:         1585, Cyc%:   0.7%, Operations:          768, Op%:   0.1%, Operations/Cycle: 0.484543
+S32__image_encoder_encoder_encoder_5_GlobalAveragePool: Cycles:         1298, Cyc%:   0.6%, Operations:          768, Op%:   0.1%, Operations/Cycle: 0.591680
+     S41__classifier_classifier_0_Gemm_fusion: Cycles:         2827, Cyc%:   1.2%, Operations:         3584, Op%:   0.3%, Operations/Cycle: 1.267775
+            S44__classifier_classifier_3_Gemm: Cycles:         1478, Cyc%:   0.6%, Operations:          896, Op%:   0.1%, Operations/Cycle: 0.606225
+                                      IO_Wait: Cycles:            0, Cyc%:   0.0%, Operations:            0, Op%:   0.0%, Operations/Cycle: nan
+
+                                        Total: Cycles:       231400, Cyc%: 100.0%, Operations:      1323128, Op%: 100.0%, Operations/Cycle: 5.717926
+
+Ended
+[100%] Built target run

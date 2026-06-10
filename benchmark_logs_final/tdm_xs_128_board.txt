@@ -1,0 +1,255 @@
+-- [[1;37mSDK[m] Version: 5.21.1
+-- [[1;34mPlatform[m] Board[m
+-- [[1;32mOS[m] FreeRTOS (Scheduler v2)
+-- [[1;32mPrintf[m] Semihost
+-- [[37mGCC Global Optimization[m] -Os
+-- [[1;34mBoard[m] GAP Family : [36m9[m
+-- [[1;34mBoard[m] GAP Version : [36m2[m
+-- Clock speeds - Cluster 370 FC 370 Peripheral 370
+-- [Log] none
+-- [[36mtdm_xs_128_ce_best[m] Include directories : [36m/app/TinyDisasterVQA/gap9_generated_final/tdm_xs_128_ce_best;/app/install/gap9-sdk/tools/autotiler_v3/Autotiler;/app/install/gap9-sdk/tools/autotiler_v3/Emulation;/app/install/gap9-sdk/libs/gap_lib/include;/app/install/gap9-sdk/utils/power_meas_utils;/app/install/gap9-sdk/libs/include;/app/install/gap9-sdk/tools/autotiler_v3/ISP_Libraries;/app/install/gap9-sdk/tools/autotiler_v3/ISP_Libraries;/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries;/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_fp32;/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_fp16;/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_fp16/CNN_Libraries_fp16x;/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_SQ8;/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_HWPE;/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2;/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/FastMathFunctions;/app/TinyDisasterVQA/gap9_generated_final/tdm_xs_128_ce_best/build/BUILD_MODEL;/app/TinyDisasterVQA/gap9_generated_final/tdm_xs_128_ce_best;/app/TinyDisasterVQA/gap9_generated_final/tdm_xs_128_ce_best/at_model[m
+-- [[36mtdm_xs_128_ce_best[m] Compile options : [36m-DCHIP_FAMILY=9;-D__GAP9__;-DCHIP_VERSION=2;-D__AUTOTILER_APP__;-I/app/install/gap9-sdk/tools/autotiler_v3/Autotiler;-I/app/install/gap9-sdk/tools/autotiler_v3/Emulation;-DF16_DSP_BFLOAT;-O3;-DAT_MODEL_PREFIX=;-DSTACK_SIZE=4096;-DSLAVE_STACK_SIZE=1024;-DFREQ_CL=370;-DFREQ_FC=370;-DFREQ_PE=370;-DPERF;-D__GAP__;-D__riscv__;-D__RISCV_ARCH_GAP__=1;-D__USE_TCDM_MALLOC__=1;-D__FC_MALLOC_NATIVE__=0;-D__L2_MALLOC_NATIVE__=0;-D__PMSIS_L2_MALLOC_NATIVE__=0;-DPMSIS_DRIVERS=1;-DFEATURE_CLUSTER;-DGAP_SDK_VERSION=5.21.1;-D__PLATFORM_BOARD__;-D__PLATFORM__=ARCHI_PLATFORM_BOARD;-D__FREERTOS__;-DSCHEDULER_V2;-DSCHEDULER_V3;-D__SEMIHOSTING__;-DPRINTF_SEMIHOST;-DPRINTF_DISABLE_SUPPORT_EXPONENTIAL[m
+-- Configuring done (1.0s)
+-- Generating done (0.5s)
+-- Build files have been written to: /app/TinyDisasterVQA/gap9_generated_final/tdm_xs_128_ce_best/build
+[  2%] Built target pmsis_printf
+[  2%] Building C object pmsis/tools/allocator/CMakeFiles/pulp_allocator.dir/src/alloc_pool.c.obj
+[  3%] Building C object pmsis/tools/allocator/CMakeFiles/pulp_allocator.dir/src/alloc.c.obj
+[  3%] Building C object pmsis/tools/allocator/CMakeFiles/pulp_allocator.dir/src/pi_malloc.c.obj
+[  4%] Linking C static library libpulp_allocator.a
+[  4%] Built target pulp_allocator
+[  7%] Built target freertos_libs
+[  9%] Built target fll_pmu_lib
+[  9%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/maestro/driver/maestro.c.obj
+[ 10%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/maestro/driver/maestro_irq.c.obj
+[ 10%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/gpio/driver/gpio.c.obj
+[ 11%] Building ASM object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/gpio/driver/gpio_asm.S.obj
+[ 12%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/efuse/driver/efuse.c.obj
+[ 12%] Building ASM object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/gap_iet.S.obj
+[ 13%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/udma_aes/driver/aes.c.obj
+[ 13%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/udma_aes/driver/aes_internal.c.obj
+[ 15%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/udma_aes_dual_core/driver/aes_dual_core_internal.c.obj
+[ 16%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/quiddikey/driver/quiddikey_internal.c.obj
+[ 16%] Building ASM object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/cluster/driver/cluster-cc.S.obj
+[ 17%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/cluster/driver/cluster.c.obj
+[ 17%] Building ASM object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/cluster/driver/cluster-pe-team.S.obj
+[ 18%] Building ASM object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/cluster/driver/cluster-pe-workgroup.S.obj
+[ 18%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/rtos/malloc/pi_cl_malloc.c.obj
+[ 19%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/udma_core/driver/udma_core.c.obj
+[ 20%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/fc_event/driver/fc_event.c.obj
+[ 20%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/pad/driver/pad.c.obj
+[ 21%] Building ASM object pmsis/CMakeFiles/pmsis.dir/implem/utils/asm_util.S.obj
+[ 21%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/utils/ctors_dtors.c.obj
+[ 22%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/utils/host_sync_access.c.obj
+[ 22%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/utils/gap_io.c.obj
+[ 23%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/utils/pi_log.c.obj
+[ 24%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/utils/time.c.obj
+[ 24%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/utils/device.c.obj
+[ 25%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/rtos/os/system_gap.c.obj
+[ 25%] Building ASM object pmsis/CMakeFiles/pmsis.dir/implem/utils/startup_gap.S.obj
+[ 26%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/timer/driver/pi_timer.c.obj
+[ 26%] Building C object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/udma_octospi/driver/octospi.c.obj
+[ 27%] Building ASM object pmsis/CMakeFiles/pmsis.dir/implem/chips/gap9/udma_octospi/driver/octospi_asm.S.obj
+[ 29%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/bsp/bsp.c.obj
+[ 29%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/fs/fs.c.obj
+[ 30%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/fs/host_fs/host_fs.c.obj
+[ 30%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/fs/lfs/lfs_util.c.obj
+[ 31%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/fs/lfs/lfs.c.obj
+[ 31%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/fs/lfs/pi_lfs.c.obj
+[ 32%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/fs/read_fs/read_fs.c.obj
+[ 33%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/fs/vfs.c.obj
+[ 33%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/partition/flash_partition_v2.c.obj
+[ 34%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/partition/secret_storage.c.obj
+[ 34%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/boards/src/bsp_gap9evk_v1_3.c.obj
+[ 35%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/boards/src/bsp_gap9mod_v1_0_b.c.obj
+[ 35%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/crc/crc32/crc32.c.obj
+[ 36%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/flash/api/flash.c.obj
+[ 37%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/flash/mram/mram-v2.c.obj
+[ 37%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/flash/mx25u51245g/mx25u51245g.c.obj
+[ 38%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/powersupply/api/powersupply.c.obj
+[ 38%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/powersupply/powersupplygpio/powersupplygpio.c.obj
+[ 39%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/ram/api/ram.c.obj
+[ 40%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/ram/api/alloc_extern.c.obj
+[ 40%] Building C object pmsis/CMakeFiles/pmsis.dir/bsp/ram/aps256xxn/aps256xxn.c.obj
+[ 41%] Building C object pmsis/CMakeFiles/pmsis.dir/__/devicetree/internal/devicetree_internal.c.obj
+[ 41%] Building C object pmsis/CMakeFiles/pmsis.dir/__/devicetree/src/dt.c.obj
+[ 43%] Building C object pmsis/CMakeFiles/pmsis.dir/__/devicetree/fpv2/devicetree_fpv2.c.obj
+[ 43%] Linking C static library libpmsis.a
+[ 43%] Built target pmsis
+[ 44%] Building ASM object freertos/vendors/gwt/pmsis/backend/CMakeFiles/pmsis_backend.dir/src/main.S.obj
+[ 45%] Building C object freertos/vendors/gwt/pmsis/backend/CMakeFiles/pmsis_backend.dir/src/custom_list.c.obj
+[ 45%] Building C object freertos/vendors/gwt/pmsis/backend/CMakeFiles/pmsis_backend.dir/src/native_evt.c.obj
+[ 46%] Building C object freertos/vendors/gwt/pmsis/backend/CMakeFiles/pmsis_backend.dir/src/native_task.c.obj
+[ 46%] Building C object freertos/vendors/gwt/pmsis/backend/CMakeFiles/pmsis_backend.dir/src/sync_obj.c.obj
+[ 47%] Building C object freertos/vendors/gwt/pmsis/backend/CMakeFiles/pmsis_backend.dir/src/os.c.obj
+[ 47%] Linking C static library libpmsis_backend.a
+[ 47%] Built target pmsis_backend
+[ 48%] Building ASM object freertos/CMakeFiles/freertos.dir/freertos_kernel/portable/GCC/RI5CY-GAP9/port_asm.S.obj
+[ 48%] Building C object freertos/CMakeFiles/freertos.dir/freertos_kernel/portable/GCC/RI5CY-GAP9/port.c.obj
+[ 49%] Building C object freertos/CMakeFiles/freertos.dir/freertos_kernel/list.c.obj
+[ 49%] Building C object freertos/CMakeFiles/freertos.dir/freertos_kernel/queue.c.obj
+[ 50%] Building C object freertos/CMakeFiles/freertos.dir/freertos_kernel/tasks.c.obj
+[ 50%] Building ASM object freertos/CMakeFiles/freertos.dir/freertos_kernel/freertos_task.S.obj
+[ 51%] Building C object freertos/CMakeFiles/freertos.dir/freertos_kernel/timers.c.obj
+[ 52%] Building C object freertos/CMakeFiles/freertos.dir/freertos_kernel/event_groups.c.obj
+[ 52%] Building C object freertos/CMakeFiles/freertos.dir/freertos_kernel/stream_buffer.c.obj
+[ 53%] Building C object freertos/CMakeFiles/freertos.dir/freertos_kernel/event.c.obj
+[ 53%] Building C object freertos/CMakeFiles/freertos.dir/freertos_kernel/scheduler.c.obj
+[ 54%] Building C object freertos/CMakeFiles/freertos.dir/freertos_kernel/sync_obj-v3.c.obj
+[ 54%] Building C object freertos/CMakeFiles/freertos.dir/freertos_kernel/semaphore-v2.c.obj
+[ 55%] Building C object freertos/CMakeFiles/freertos.dir/freertos_kernel/task-v3.c.obj
+[ 56%] Building C object freertos/CMakeFiles/freertos.dir/app/install/gap9-sdk/rtos/pmsis/implem/chips/gap9/timer_os/timer.c.obj
+[ 56%] Building ASM object freertos/CMakeFiles/freertos.dir/app/install/gap9-sdk/rtos/pmsis/implem/chips/gap9/timer_os/timer_asm.S.obj
+[ 58%] Building C object freertos/CMakeFiles/freertos.dir/vendors/gwt/gap9/config/FreeRTOS_util.c.obj
+[ 58%] Building C object freertos/CMakeFiles/freertos.dir/vendors/gwt/gap9/src/device/freertos_it.c.obj
+[ 59%] Building C object freertos/CMakeFiles/freertos.dir/vendors/gwt/gap9/src/device/gap_it.c.obj
+[ 59%] Linking C static library libfreertos.a
+[ 59%] Built target freertos
+[ 60%] Building C object libs/gap_lib/CMakeFiles/gap_lib.dir/img_io/ImgIO.c.obj
+[ 60%] Building C object libs/gap_lib/CMakeFiles/gap_lib.dir/wav_io/wavIO.c.obj
+[ 61%] Building C object libs/gap_lib/CMakeFiles/gap_lib.dir/wav_io/wav_header.c.obj
+[ 62%] Linking C static library libgap_lib.a
+[ 62%] Built target gap_lib
+[ 63%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/tdm_xs_128_ce_best.c.obj
+[ 63%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries/SSD_BasicKernels.c.obj
+[ 64%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/ISP_Libraries/ResizeBasicKernels.c.obj
+[ 64%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/ISP_Libraries/ISP_BasicKernels.c.obj
+[ 65%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries/CNN_Copy.c.obj
+[ 65%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_SQ8/CNN_AT_Misc.c.obj
+[ 66%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries/CNN_BiasReLULinear_BasicKernels.c.obj
+[ 67%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries/CNN_Conv_BasicKernels.c.obj
+[ 67%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries/CNN_Conv_DP_BasicKernels.c.obj
+[ 68%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries/CNN_Conv_DW_BasicKernels.c.obj
+[ 68%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries/CNN_Conv_DW_DP_BasicKernels.c.obj
+[ 69%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries/CNN_Pooling_BasicKernels.c.obj
+[ 69%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries/CNN_MatAlgebra.c.obj
+[ 70%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries/CNN_SoftMax.c.obj
+[ 72%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_SQ8/CNN_Activation_SQ8.c.obj
+[ 72%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_SQ8/CNN_Bias_Linear_SQ8.c.obj
+[ 73%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_SQ8/CNN_Conv_SQ8.c.obj
+[ 73%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_SQ8/CNN_MatMul_Conv_SQ8.c.obj
+[ 74%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_SQ8/CNN_Pooling_SQ8.c.obj
+[ 74%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_SQ8/CNN_Conv_DW_SQ8.c.obj
+[ 75%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_SQ8/CNN_Conv_DW_Red_SQ8.c.obj
+[ 76%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_SQ8/CNN_MatAlgebra_SQ8.c.obj
+[ 76%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_SQ8/CNN_SoftMax_SQ8.c.obj
+[ 77%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_SQ8/RNN_SQ8.c.obj
+[ 77%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_HWPE/CNN_BasicKernels_NE16.c.obj
+[ 78%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/CNN_Libraries_HWPE/RNN_BasicKernels_NE16.c.obj
+[ 79%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/ComplexMathFunctions/CmplxFunctionsFix.c.obj
+[ 79%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/ComplexMathFunctions/CmplxFunctionsf16.c.obj
+[ 80%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/ComplexMathFunctions/CmplxFunctionsf16a.c.obj
+[ 80%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/ComplexMathFunctions/CmplxFunctionsf32.c.obj
+[ 81%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/FastMathFunctions/MathFuncsFix.c.obj
+[ 81%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/FastMathFunctions/PiecewiseMathf16.c.obj
+[ 82%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/FastMathFunctions/PiecewiseMathf16a.c.obj
+[ 83%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/FastMathFunctions/PiecewiseMathf32.c.obj
+[ 83%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/TransformFunctions/DctLibraryFix.c.obj
+[ 84%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/TransformFunctions/DctLibraryf16.c.obj
+[ 84%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/TransformFunctions/DctLibraryf16a.c.obj
+[ 86%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/TransformFunctions/DctLibraryf32.c.obj
+[ 86%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/TransformFunctions/FftLibraryFix.c.obj
+[ 87%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/TransformFunctions/FftLibraryf16.c.obj
+[ 88%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/TransformFunctions/FftLibraryf16a.c.obj
+[ 88%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/TransformFunctions/FftLibraryf32.c.obj
+[ 89%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/TransformFunctions/DftLibraryf16.c.obj
+[ 89%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/TransformFunctions/DftLibraryf16a.c.obj
+[ 90%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/TransformFunctions/DftLibraryf32.c.obj
+[ 90%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/MatrixFunctions/MatMulDSP.c.obj
+[ 91%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/MatrixFunctions/MatMulDSPf16.c.obj
+[ 92%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/MatrixFunctions/MatMulDSPf16a.c.obj
+[ 92%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/MatrixFunctions/MatVectDSP.c.obj
+[ 93%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/MatrixFunctions/MatAddDSP.c.obj
+[ 93%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/TransformFunctions/MfccLibraryf16.c.obj
+[ 94%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/TransformFunctions/MfccLibraryf16a.c.obj
+[ 94%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/TransformFunctions/MfccLibraryf32.c.obj
+[ 95%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/WindowFunctions/PreProcessingFix.c.obj
+[ 96%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/WindowFunctions/PreProcessingf16.c.obj
+[ 96%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/WindowFunctions/PreProcessingf16a.c.obj
+[ 97%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/app/install/gap9-sdk/tools/autotiler_v3/DSP_Librariesv2/WindowFunctions/PreProcessingf32.c.obj
+[ 97%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/BUILD_MODEL/tdm_xs_128_ce_bestKernels.c.obj
+[ 98%] Building C object CMakeFiles/tdm_xs_128_ce_best.dir/at_model/Expression_Kernels.c.obj
+[ 98%] Linking C executable tdm_xs_128_ce_best
+[100%] Built target tdm_xs_128_ce_best
+[100%] Built target image
+Flashing image with command:
+openocd -c "gdb_port disabled; telnet_port 12953; tcl_port disabled" -f "/app/install/gap9-sdk/utils/openocd_tools/tcl/gapuino_ftdi.cfg" -c "" -f "/app/install/gap9-sdk/utils/openocd_tools/tcl/gap9revb.tcl"
+Open On-Chip Debugger 0.10.0+dev-00841-g1449af5bd (2026-06-06-22:59)
+Licensed under GNU GPL v2
+For bug reports, read
+	http://openocd.org/doc/doxygen/bugs.html
+Info : auto-selecting first available session transport "jtag". To override use 'transport select <transport>'.
+TAP: gap9.riscv
+
+TAP: gap9.pulp
+
+Error: no device found
+Error: unable to open ftdi device with vid 0403, pid 6010, description '*', serial '*' at bus location '*'
+Info : clock speed 5000 kHz
+jtag init
+ret=00
+ret=03
+INIT: confreg polling done
+Info : datacount=2 progbufsize=8
+Info : Examined RISC-V core; found 10 harts
+Info :  hart 0: currently disabled
+Info :  hart 1: currently disabled
+Info :  hart 2: currently disabled
+Info :  hart 3: currently disabled
+Info :  hart 4: currently disabled
+Info :  hart 5: currently disabled
+Info :  hart 6: currently disabled
+Info :  hart 7: currently disabled
+Info :  hart 8: currently disabled
+Info :  hart 9: XLEN=32, misa=0x40901124
+examine done
+Info : JTAG tap: gap9.riscv tap/device found: 0x20020bcb (mfg: 0x5e5 (<unknown>), part: 0x0020, ver: 0x2)
+Info : JTAG tap: gap9.pulp tap/device found: 0x20021bcb (mfg: 0x5e5 (<unknown>), part: 0x0021, ver: 0x2)
+Info : gdb port disabled
+Ready for Remote Connections
+Info : tcl server disabled
+Info : Listening on port 12953 for telnet connections
+loading flash.bin_0 to spi - copied 0 / 4096 Bytes - 0.00 %loading flash.bin_0 to spi - copied 4096 / 4096 Bytes - 100.00 %
+loading mram.bin_0 to mram - copied 0 / 210784 Bytes - 0.00 %loading mram.bin_0 to mram - copied 16384 / 210784 Bytes - 7.77 %loading mram.bin_0 to mram - copied 32768 / 210784 Bytes - 15.55 %loading mram.bin_0 to mram - copied 49152 / 210784 Bytes - 23.32 %loading mram.bin_0 to mram - copied 65536 / 210784 Bytes - 31.09 %loading mram.bin_0 to mram - copied 81920 / 210784 Bytes - 38.86 %loading mram.bin_0 to mram - copied 98304 / 210784 Bytes - 46.64 %loading mram.bin_0 to mram - copied 114688 / 210784 Bytes - 54.41 %loading mram.bin_0 to mram - copied 131072 / 210784 Bytes - 62.18 %loading mram.bin_0 to mram - copied 147456 / 210784 Bytes - 69.96 %loading mram.bin_0 to mram - copied 163840 / 210784 Bytes - 77.73 %loading mram.bin_0 to mram - copied 180224 / 210784 Bytes - 85.50 %loading mram.bin_0 to mram - copied 196608 / 210784 Bytes - 93.27 %loading mram.bin_0 to mram - copied 210784 / 210784 Bytes - 100.00 %
+[100%] Built target flash
+TAP: gap9.riscv
+
+TAP: gap9.pulp
+
+jtag init
+ret=00
+ret=03
+
+
+	 *** NNTOOL tdm_xs_128_ce_best Example ***
+
+Entering main controller
+FC Frequency = 370000000 Hz CL Frequency = 370000000 Hz PERIPH Frequency = 370000000 Hz
+Voltage: 800mV
+Constructor
+Call cluster
+Start timer
+Runner completed: 0
+
+                             S36__linear_Gemm: Cycles:         1524, Cyc%:   0.6%, Operations:          248, Op%:   0.0%, Operations/Cycle: 0.162730
+S5__image_encoder_encoder_encoder_0_block_block_0_Conv_fusion: Cycles:       164992, Cyc%:  62.7%, Operations:       884736, Op%:  66.9%, Operations/Cycle: 5.362297
+S8__image_encoder_encoder_encoder_1_block_block_0_Conv_fusion: Cycles:        42839, Cyc%:  16.3%, Operations:        73728, Op%:   5.6%, Operations/Cycle: 1.721049
+S11__image_encoder_encoder_encoder_1_block_block_3_Conv_fusion: Cycles:        11810, Cyc%:   4.5%, Operations:       131072, Op%:   9.9%, Operations/Cycle: 11.098392
+S14__image_encoder_encoder_encoder_2_block_block_0_Conv_fusion: Cycles:        16375, Cyc%:   6.2%, Operations:        36864, Op%:   2.8%, Operations/Cycle: 2.251237
+S17__image_encoder_encoder_encoder_2_block_block_3_Conv_fusion: Cycles:         4243, Cyc%:   1.6%, Operations:        98304, Op%:   7.4%, Operations/Cycle: 23.168512
+S20__image_encoder_encoder_encoder_3_block_block_0_Conv_fusion: Cycles:         7484, Cyc%:   2.8%, Operations:        13824, Op%:   1.0%, Operations/Cycle: 1.847141
+S23__image_encoder_encoder_encoder_3_block_block_3_Conv_fusion: Cycles:         2574, Cyc%:   1.0%, Operations:        49152, Op%:   3.7%, Operations/Cycle: 19.095572
+S26__image_encoder_encoder_encoder_4_block_block_0_Conv_fusion: Cycles:         3105, Cyc%:   1.2%, Operations:         4608, Op%:   0.3%, Operations/Cycle: 1.484058
+S29__image_encoder_encoder_encoder_4_block_block_3_Conv_fusion: Cycles:         2140, Cyc%:   0.8%, Operations:        24576, Op%:   1.9%, Operations/Cycle: 11.484112
+S31__image_encoder_encoder_encoder_5_GlobalAveragePool_trans: Cycles:         1339, Cyc%:   0.5%, Operations:          768, Op%:   0.1%, Operations/Cycle: 0.573562
+S32__image_encoder_encoder_encoder_5_GlobalAveragePool: Cycles:         1103, Cyc%:   0.4%, Operations:          768, Op%:   0.1%, Operations/Cycle: 0.696283
+     S41__classifier_classifier_0_Gemm_fusion: Cycles:         2395, Cyc%:   0.9%, Operations:         3584, Op%:   0.3%, Operations/Cycle: 1.496451
+            S44__classifier_classifier_3_Gemm: Cycles:         1258, Cyc%:   0.5%, Operations:          896, Op%:   0.1%, Operations/Cycle: 0.712242
+                                      IO_Wait: Cycles:            0, Cyc%:   0.0%, Operations:            0, Op%:   0.0%, Operations/Cycle: nan
+
+                                        Total: Cycles:       263181, Cyc%: 100.0%, Operations:      1323128, Op%: 100.0%, Operations/Cycle: 5.027445
+
+Ended
+Launching execution with command:
+openocd -d0 -c "gdb_port disabled; telnet_port disabled; tcl_port disabled" -f "/app/install/gap9-sdk/utils/openocd_tools/tcl/gapuino_ftdi.cfg" -c "" -f "/app/install/gap9-sdk/utils/openocd_tools/tcl/gap9revb.tcl"  -c "load_and_start_binary /app/TinyDisasterVQA/gap9_generated_final/tdm_xs_128_ce_best/build/tdm_xs_128_ce_best 0x1c010160"
+[100%] Built target run
