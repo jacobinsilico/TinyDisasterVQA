@@ -1,0 +1,37 @@
+Section,Model/Variant,Metric,Value
+Teacher Ablation,cap10+LSTM,test_acc,0.8571
+Teacher Ablation,cap10+LSTM,count_acc,0.5091
+Teacher Ablation,cap5+LSTM,test_acc,0.8691
+Teacher Ablation,cap5+LSTM,count_acc,0.5744
+Teacher Ablation,cap10+tmpl,test_acc,0.8674
+Teacher Ablation,cap10+tmpl,count_acc,0.5222
+Teacher Ablation,cap5+tmpl,test_acc,0.8843
+Teacher Ablation,cap5+tmpl,count_acc,0.6266
+Teacher Ablation,cap5+tmpl+WCE,test_acc,0.8887
+Teacher Ablation,cap5+tmpl+WCE,count_acc,0.6397
+Teacher Ablation,cap5+tmpl+Aux,test_acc,0.8871
+Teacher Ablation,cap5+tmpl+Aux,count_acc,0.6423
+Student Ablation,TDM-Fast @224,params,91902
+Student Ablation,TDM-Fast @224,test_acc,0.8522
+Student Ablation,TDM-Fast @128,params,91902
+Student Ablation,TDM-Fast @128,test_acc,0.8505
+Student Ablation,TDM-S @224,params,25814
+Student Ablation,TDM-S @224,test_acc,0.8456
+Student Ablation,TDM-S @128,params,25814
+Student Ablation,TDM-S @128,test_acc,0.8265
+Student Ablation,TDM-XS @128,params,8982
+Student Ablation,TDM-XS @128,test_acc,0.8063
+GAP9 Deployment,TDM-Fast @128,test_acc,0.8505
+GAP9 Deployment,TDM-Fast @128,params,91902
+GAP9 Deployment,TDM-Fast @128,const_kb,94
+GAP9 Deployment,TDM-Fast @128,gvsoc_cycles,474891
+GAP9 Deployment,TDM-Fast @128,board_cycles,511659
+GAP9 Deployment,TDM-Fast @128,board_latency_ms,1.38
+GAP9 Deployment,TDM-Fast @128,board_ops_cycle,28.867821
+GAP9 Deployment,TDM-XS @128,test_acc,0.8063
+GAP9 Deployment,TDM-XS @128,params,8982
+GAP9 Deployment,TDM-XS @128,const_kb,13
+GAP9 Deployment,TDM-XS @128,gvsoc_cycles,231400
+GAP9 Deployment,TDM-XS @128,board_cycles,263181
+GAP9 Deployment,TDM-XS @128,board_latency_ms,0.71
+GAP9 Deployment,TDM-XS @128,board_ops_cycle,5.027445

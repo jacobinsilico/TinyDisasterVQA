@@ -1,0 +1,6 @@
+Student Ablation Takeaways
+--------------------------
+* Scaling up student size did not help much (TDM-M and TDM-L plateau or degrade compared to Fast/S).
+* KD did not improve overall accuracy enough to justify using it in deployment.
+* 128x128 is a strong deployment resolution, retaining most of the accuracy while saving latency.
+* Deployed models were TDM-Fast @128 (main model) and TDM-XS @128 (ultra-tiny reference).

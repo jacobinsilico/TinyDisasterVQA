@@ -230,7 +230,7 @@ outputs
 outputs_v2 
 runs/ 
 
-docs/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -253,3 +253,8 @@ gap9_generated_final/
 
 # Optional: ignore all benchmark folders except final text logs
 # If benchmark_logs_final only contains small txt logs, keep it tracked.
+docs/gap9_benchmark_summary.txt
+docs/gap9_deployment_summary.txt
+docs/pipelinev2_ablation_summary.txt
+docs/teacher_ablation_summary.txt
+docs/student_ablation_summary.txt
