@@ -205,10 +205,3 @@ cmake --build build --target run
     year={2024}
   }
   ```
-- **TODO:** Add any additional citations for GAP9 / GreenWaves / PULP SDK.
-
----
-
-## License
-
-*(TODO: Add license information)*
