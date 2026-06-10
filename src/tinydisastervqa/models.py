@@ -5,12 +5,18 @@ Model definitions for TinyDisasterVQA.
 
 Current models:
   - TeacherVQA: strong image encoder + configurable question encoder + MLP classifier
-  - TDMVQA: tiny CNN + template embedding student model
+  - TDMVQA: tiny hardware-friendly CNN + one-hot-template Linear encoder
 
 Teacher supports:
   - LSTM question encoder
-  - question_template_id embedding encoder
+  - template-ID question encoder implemented as one-hot + Linear
   - optional count auxiliary head for count-aware teacher ablation
+
+Student supports:
+  - single-head edge_global classification only
+  - cap5 / 14 classes by default
+  - hardware-friendly ops: Conv2d, Depthwise Conv2d, BatchNorm2d, ReLU,
+    AdaptiveAvgPool2d, Flatten, Linear, concat
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ from typing import Literal
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence
 
 from torchvision import models
@@ -112,7 +119,7 @@ class TorchvisionImageEncoder(nn.Module):
             self.feature_dim = model.fc.in_features
             self.encoder = nn.Sequential(
                 *list(model.children())[:-1],
-                nn.FlatTensor(1) if False else nn.Flatten(1),
+                nn.Flatten(1),
             )
 
         elif backbone_name == "resnet50":
@@ -218,10 +225,14 @@ class LSTMQuestionEncoder(nn.Module):
 
 class TemplateQuestionEncoder(nn.Module):
     """
-    Template-ID question encoder.
+    Hardware-friendly template-ID question encoder.
 
-    FloodNet-VQA has a small fixed set of question templates, so template IDs are
-    a useful lightweight alternative to a full language encoder.
+    Instead of nn.Embedding(template_id), this uses:
+
+      template_id -> one-hot vector -> Linear
+
+    This is intentionally simple for export/deployment because the learnable part
+    becomes a normal Linear/MatMul-style operation.
     """
 
     def __init__(
@@ -231,21 +242,39 @@ class TemplateQuestionEncoder(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.num_question_templates = num_question_templates
-        self.embed_dim = embed_dim
+        self.num_question_templates = int(num_question_templates)
+        self.embed_dim = int(embed_dim)
 
-        self.embedding = nn.Embedding(
-            num_embeddings=num_question_templates,
-            embedding_dim=embed_dim,
+        self.linear = nn.Linear(
+            in_features=self.num_question_templates,
+            out_features=self.embed_dim,
+            bias=True,
         )
 
-        self.output_dim = embed_dim
+        self.output_dim = self.embed_dim
 
     def forward(self, question_template_ids: torch.Tensor) -> torch.Tensor:
         if question_template_ids.ndim > 1:
             question_template_ids = question_template_ids.squeeze(-1)
 
-        return self.embedding(question_template_ids.long())
+        question_template_ids = question_template_ids.long()
+
+        if bool((question_template_ids < 0).any()):
+            raise ValueError("question_template_ids must be non-negative.")
+
+        if bool((question_template_ids >= self.num_question_templates).any()):
+            max_id = int(question_template_ids.max().item())
+            raise ValueError(
+                f"question_template_id {max_id} is outside valid range "
+                f"[0, {self.num_question_templates - 1}]."
+            )
+
+        one_hot = F.one_hot(
+            question_template_ids,
+            num_classes=self.num_question_templates,
+        ).to(dtype=self.linear.weight.dtype)
+
+        return self.linear(one_hot)
 
 
 def _make_mlp(
@@ -414,7 +443,6 @@ class TeacherVQA(nn.Module):
         )
 
         fused = torch.cat([image_features, question_features], dim=1)
-
         logits = self.classifier(fused)
 
         if not return_aux:
@@ -543,8 +571,8 @@ def build_teacher_from_metadata(
 # =============================================================================
 
 
-StudentHeadType = Literal["single", "multihead"]
-StudentVariant = Literal["tdm_xxs", "tdm_xs", "tdm_s", "tdm_m"]
+StudentVariant = Literal["tdm_s", "tdm_m", "tdm_l", "tdm_fast"]
+ImageBlockType = Literal["dsconv", "conv"]
 
 EDGE_HEADS: tuple[str, str, str, str] = ("binary", "condition", "density", "count")
 EDGE_HEAD_TO_ID: dict[str, int] = {name: idx for idx, name in enumerate(EDGE_HEADS)}
@@ -555,89 +583,120 @@ class TDMConfig:
     """
     Generic TinyDisasterModel student configuration.
 
-    Used for:
-      - TDM-XXS: ultra-small student
-      - TDM-XS:  very small student
-      - TDM-S:   current small baseline
-      - TDM-M:   wider reference model
+    Final GAP9-oriented formulation:
+      - single-head edge_global classifier
+      - cap5 / 14 classes by default
+      - template question encoder implemented as one-hot + Linear
+      - no multihead routing
+      - no recurrent layers
+      - no attention
 
-    Preferred final deployment head_type:
-      - single: one global edge_clean classifier.
-
-    multihead is kept for backward compatibility only.
+    Variants:
+      - tdm_s:    smallest usable model
+      - tdm_m:    main deployment candidate
+      - tdm_l:    larger accuracy ceiling
+      - tdm_fast: hardware-speed candidate using regular Conv2d blocks
     """
 
     variant: StudentVariant = "tdm_s"
 
     num_question_templates: int = 31
-    question_template_embed_dim: int = 32
+    question_template_embed_dim: int = 16
 
-    image_channels: tuple[int, int, int, int, int] = (24, 48, 96, 128, 160)
+    image_channels: tuple[int, ...] = (12, 24, 48, 64, 96)
+    image_block_type: ImageBlockType = "dsconv"
 
-    fusion_hidden_dim: int = 192
-    fusion_dropout: float = 0.1
+    fusion_hidden_dim: int = 96
+    fusion_dropout: float = 0.05
     fusion_layers: int = 1
 
     num_classes: int = 14
-
-    head_type: StudentHeadType = "single"
-    edge_head_names: tuple[str, ...] = EDGE_HEADS
 
 
 @dataclass
 class TDMSConfig(TDMConfig):
     variant: StudentVariant = "tdm_s"
     num_question_templates: int = 31
-    question_template_embed_dim: int = 32
-    image_channels: tuple[int, int, int, int, int] = (24, 48, 96, 128, 160)
-    fusion_hidden_dim: int = 192
-    fusion_dropout: float = 0.1
+    question_template_embed_dim: int = 16
+    image_channels: tuple[int, ...] = (12, 24, 48, 64, 96)
+    image_block_type: ImageBlockType = "dsconv"
+    fusion_hidden_dim: int = 96
+    fusion_dropout: float = 0.05
     fusion_layers: int = 1
     num_classes: int = 14
-    head_type: StudentHeadType = "single"
 
 
 @dataclass
 class TDMMConfig(TDMConfig):
     variant: StudentVariant = "tdm_m"
     num_question_templates: int = 31
-    question_template_embed_dim: int = 64
-    image_channels: tuple[int, int, int, int, int] = (32, 64, 128, 192, 256)
-    fusion_hidden_dim: int = 384
-    fusion_dropout: float = 0.15
+    question_template_embed_dim: int = 24
+    image_channels: tuple[int, ...] = (16, 32, 64, 96, 128)
+    image_block_type: ImageBlockType = "dsconv"
+    fusion_hidden_dim: int = 128
+    fusion_dropout: float = 0.08
+    fusion_layers: int = 1
+    num_classes: int = 14
+
+
+@dataclass
+class TDMLConfig(TDMConfig):
+    variant: StudentVariant = "tdm_l"
+    num_question_templates: int = 31
+    question_template_embed_dim: int = 32
+    image_channels: tuple[int, ...] = (24, 48, 96, 128, 160)
+    image_block_type: ImageBlockType = "dsconv"
+    fusion_hidden_dim: int = 192
+    fusion_dropout: float = 0.10
     fusion_layers: int = 2
     num_classes: int = 14
-    head_type: StudentHeadType = "single"
+
+
+@dataclass
+class TDMFastConfig(TDMConfig):
+    variant: StudentVariant = "tdm_fast"
+    num_question_templates: int = 31
+    question_template_embed_dim: int = 16
+    image_channels: tuple[int, ...] = (16, 32, 64, 96)
+    image_block_type: ImageBlockType = "conv"
+    fusion_hidden_dim: int = 96
+    fusion_dropout: float = 0.05
+    fusion_layers: int = 1
+    num_classes: int = 14
 
 
 TDM_VARIANT_DEFAULTS: dict[StudentVariant, dict[str, object]] = {
-    "tdm_xxs": {
+    "tdm_s": {
         "question_template_embed_dim": 16,
-        "image_channels": (8, 16, 32, 48, 64),
-        "fusion_hidden_dim": 64,
+        "image_channels": (12, 24, 48, 64, 96),
+        "image_block_type": "dsconv",
+        "fusion_hidden_dim": 96,
         "fusion_dropout": 0.05,
         "fusion_layers": 1,
     },
-    "tdm_xs": {
+    "tdm_m": {
         "question_template_embed_dim": 24,
         "image_channels": (16, 32, 64, 96, 128),
+        "image_block_type": "dsconv",
         "fusion_hidden_dim": 128,
         "fusion_dropout": 0.08,
         "fusion_layers": 1,
     },
-    "tdm_s": {
+    "tdm_l": {
         "question_template_embed_dim": 32,
         "image_channels": (24, 48, 96, 128, 160),
+        "image_block_type": "dsconv",
         "fusion_hidden_dim": 192,
         "fusion_dropout": 0.10,
-        "fusion_layers": 1,
-    },
-    "tdm_m": {
-        "question_template_embed_dim": 64,
-        "image_channels": (32, 64, 128, 192, 256),
-        "fusion_hidden_dim": 384,
-        "fusion_dropout": 0.15,
         "fusion_layers": 2,
+    },
+    "tdm_fast": {
+        "question_template_embed_dim": 16,
+        "image_channels": (16, 32, 64, 96),
+        "image_block_type": "conv",
+        "fusion_hidden_dim": 96,
+        "fusion_dropout": 0.05,
+        "fusion_layers": 1,
     },
 }
 
@@ -712,146 +771,94 @@ class DepthwiseSeparableConv(nn.Module):
 
 class TinyCNNImageEncoder(nn.Module):
     """
-    Small depthwise-separable CNN for TDM students.
+    Hardware-friendly tiny CNN image encoder.
 
     Input:
       image [B, 3, H, W]
 
     Output:
       image feature [B, image_channels[-1]]
+
+    block_type:
+      - dsconv: depthwise-separable blocks after first regular conv
+      - conv:   regular ConvBNReLU blocks throughout, intended as TDM-Fast
     """
 
     def __init__(
         self,
-        channels: tuple[int, int, int, int, int] = (24, 48, 96, 128, 160),
+        channels: tuple[int, ...] = (12, 24, 48, 64, 96),
+        block_type: ImageBlockType = "dsconv",
     ) -> None:
         super().__init__()
 
-        c1, c2, c3, c4, c5 = channels
+        if len(channels) < 2:
+            raise ValueError("TinyCNNImageEncoder requires at least two channel stages.")
 
-        self.feature_dim = c5
+        self.channels = tuple(int(c) for c in channels)
+        self.block_type = block_type
+        self.feature_dim = self.channels[-1]
 
-        self.encoder = nn.Sequential(
-            ConvBNAct(3, c1, kernel_size=3, stride=2),          # 224 -> 112
-            DepthwiseSeparableConv(c1, c2, stride=2),           # 112 -> 56
-            DepthwiseSeparableConv(c2, c3, stride=2),           # 56 -> 28
-            DepthwiseSeparableConv(c3, c4, stride=2),           # 28 -> 14
-            DepthwiseSeparableConv(c4, c5, stride=2),           # 14 -> 7
-            nn.AdaptiveAvgPool2d((1, 1)),
-            nn.Flatten(1),
+        layers: list[nn.Module] = []
+
+        # First layer: always regular conv from RGB.
+        layers.append(
+            ConvBNAct(
+                in_channels=3,
+                out_channels=self.channels[0],
+                kernel_size=3,
+                stride=2,
+                padding=1,
+            )
         )
+
+        in_channels = self.channels[0]
+
+        for out_channels in self.channels[1:]:
+            if block_type == "dsconv":
+                layers.append(
+                    DepthwiseSeparableConv(
+                        in_channels=in_channels,
+                        out_channels=out_channels,
+                        stride=2,
+                    )
+                )
+            elif block_type == "conv":
+                layers.append(
+                    ConvBNAct(
+                        in_channels=in_channels,
+                        out_channels=out_channels,
+                        kernel_size=3,
+                        stride=2,
+                        padding=1,
+                    )
+                )
+            else:
+                raise ValueError(f"Unknown image block_type: {block_type}")
+
+            in_channels = out_channels
+
+        layers.extend(
+            [
+                nn.AdaptiveAvgPool2d((1, 1)),
+                nn.Flatten(1),
+            ]
+        )
+
+        self.encoder = nn.Sequential(*layers)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         return self.encoder(images)
-
-
-class MultiHeadGlobalClassifier(nn.Module):
-    """
-    Backward-compatible multi-head classifier.
-
-    Not recommended for the final GAP9 formulation, but kept so old experiments
-    do not immediately break.
-    """
-
-    def __init__(
-        self,
-        in_dim: int,
-        hidden_dim: int,
-        num_classes: int,
-        dropout: float,
-        edge_head_names: tuple[str, ...] = EDGE_HEADS,
-    ) -> None:
-        super().__init__()
-
-        self.num_classes = num_classes
-        self.edge_head_names = tuple(edge_head_names)
-
-        self.trunk = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-        )
-
-        self.heads = nn.ModuleDict(
-            {
-                head_name: nn.Linear(hidden_dim, num_classes)
-                for head_name in self.edge_head_names
-            }
-        )
-
-    def _mask_for_head(
-        self,
-        edge_heads: list[str] | tuple[str, ...] | torch.Tensor,
-        head_name: str,
-        head_id: int,
-        device: torch.device,
-    ) -> torch.Tensor:
-        if isinstance(edge_heads, torch.Tensor):
-            edge_heads = edge_heads.to(device)
-
-            if edge_heads.ndim > 1:
-                edge_heads = edge_heads.squeeze(-1)
-
-            return edge_heads.long() == int(head_id)
-
-        normalized = []
-
-        for value in edge_heads:
-            if isinstance(value, bytes):
-                value = value.decode("utf-8")
-
-            normalized.append(str(value))
-
-        return torch.tensor(
-            [value == head_name for value in normalized],
-            dtype=torch.bool,
-            device=device,
-        )
-
-    def forward(
-        self,
-        fused: torch.Tensor,
-        edge_heads: list[str] | tuple[str, ...] | torch.Tensor | None = None,
-        edge_head_ids: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        if edge_head_ids is not None:
-            edge_heads = edge_head_ids
-
-        if edge_heads is None:
-            raise ValueError(
-                "MultiHeadGlobalClassifier requires edge_heads or edge_head_ids."
-            )
-
-        hidden = self.trunk(fused)
-
-        logits = hidden.new_full(
-            (hidden.size(0), self.num_classes),
-            fill_value=-1.0e4,
-        )
-
-        for head_id, head_name in enumerate(self.edge_head_names):
-            mask = self._mask_for_head(
-                edge_heads=edge_heads,
-                head_name=head_name,
-                head_id=head_id,
-                device=fused.device,
-            )
-
-            if bool(mask.any()):
-                logits[mask] = self.heads[head_name](hidden[mask])
-
-        return logits
 
 
 class TDMVQA(nn.Module):
     """
     Generic TDM student model.
 
-    Forward signature accepts question_tokens/question_lengths too, but the
-    student only uses question_template_ids.
+    Forward signature accepts question_tokens/question_lengths for compatibility,
+    but the student only uses question_template_ids.
 
     Output:
-      logits [B, num_classes] for edge_global classification.
+      logits [B, num_classes] for single-head edge_global classification.
     """
 
     def __init__(self, config: TDMConfig) -> None:
@@ -861,6 +868,7 @@ class TDMVQA(nn.Module):
 
         self.image_encoder = TinyCNNImageEncoder(
             channels=config.image_channels,
+            block_type=config.image_block_type,
         )
 
         self.question_encoder = TemplateQuestionEncoder(
@@ -870,24 +878,13 @@ class TDMVQA(nn.Module):
 
         fusion_dim = self.image_encoder.feature_dim + self.question_encoder.output_dim
 
-        if config.head_type == "single":
-            self.classifier = _make_mlp(
-                in_dim=fusion_dim,
-                hidden_dim=config.fusion_hidden_dim,
-                out_dim=config.num_classes,
-                dropout=config.fusion_dropout,
-                layers=config.fusion_layers,
-            )
-        elif config.head_type == "multihead":
-            self.classifier = MultiHeadGlobalClassifier(
-                in_dim=fusion_dim,
-                hidden_dim=config.fusion_hidden_dim,
-                num_classes=config.num_classes,
-                dropout=config.fusion_dropout,
-                edge_head_names=config.edge_head_names,
-            )
-        else:
-            raise ValueError(f"Unknown student head_type: {config.head_type}")
+        self.classifier = _make_mlp(
+            in_dim=fusion_dim,
+            hidden_dim=config.fusion_hidden_dim,
+            out_dim=config.num_classes,
+            dropout=config.fusion_dropout,
+            layers=config.fusion_layers,
+        )
 
     def forward(
         self,
@@ -898,7 +895,7 @@ class TDMVQA(nn.Module):
         edge_heads: list[str] | tuple[str, ...] | torch.Tensor | None = None,
         edge_head_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        _ = question_tokens, question_lengths
+        _ = question_tokens, question_lengths, edge_heads, edge_head_ids
 
         if question_template_ids is None:
             raise ValueError("TDMVQA requires question_template_ids.")
@@ -907,15 +904,7 @@ class TDMVQA(nn.Module):
         question_features = self.question_encoder(question_template_ids)
 
         fused = torch.cat([image_features, question_features], dim=1)
-
-        if self.config.head_type == "multihead":
-            logits = self.classifier(
-                fused,
-                edge_heads=edge_heads,
-                edge_head_ids=edge_head_ids,
-            )
-        else:
-            logits = self.classifier(fused)
+        logits = self.classifier(fused)
 
         return logits
 
@@ -928,22 +917,30 @@ class TDMMVQA(TDMVQA):
     pass
 
 
+class TDMLVQA(TDMVQA):
+    pass
+
+
+class TDMFastVQA(TDMVQA):
+    pass
+
+
 def make_tdm_config(
     variant: StudentVariant = "tdm_s",
     num_classes: int = 14,
     num_question_templates: int = 31,
     question_template_embed_dim: int | None = None,
-    image_channels: tuple[int, int, int, int, int] | None = None,
+    image_channels: tuple[int, ...] | None = None,
+    image_block_type: ImageBlockType | None = None,
     fusion_hidden_dim: int | None = None,
     fusion_dropout: float | None = None,
     fusion_layers: int | None = None,
-    head_type: StudentHeadType = "single",
 ) -> TDMConfig:
     defaults = dict(TDM_VARIANT_DEFAULTS[variant])
 
     config = TDMConfig(
         variant=variant,
-        num_question_templates=num_question_templates,
+        num_question_templates=int(num_question_templates),
         question_template_embed_dim=int(
             defaults["question_template_embed_dim"]
             if question_template_embed_dim is None
@@ -953,6 +950,11 @@ def make_tdm_config(
             defaults["image_channels"]
             if image_channels is None
             else image_channels
+        ),  # type: ignore[arg-type]
+        image_block_type=(
+            defaults["image_block_type"]
+            if image_block_type is None
+            else image_block_type
         ),  # type: ignore[arg-type]
         fusion_hidden_dim=int(
             defaults["fusion_hidden_dim"]
@@ -969,8 +971,7 @@ def make_tdm_config(
             if fusion_layers is None
             else fusion_layers
         ),
-        num_classes=num_classes,
-        head_type=head_type,
+        num_classes=int(num_classes),
     )
 
     return config
@@ -1006,11 +1007,11 @@ def build_tdm_from_metadata(
     num_classes: int | None = None,
     num_question_templates: int | None = None,
     question_template_embed_dim: int | None = None,
-    image_channels: tuple[int, int, int, int, int] | None = None,
+    image_channels: tuple[int, ...] | None = None,
+    image_block_type: ImageBlockType | None = None,
     fusion_hidden_dim: int | None = None,
     fusion_dropout: float | None = None,
     fusion_layers: int | None = None,
-    head_type: StudentHeadType = "single",
 ) -> TDMVQA:
     """
     Generic convenience builder for all TDM student variants.
@@ -1033,66 +1034,37 @@ def build_tdm_from_metadata(
         num_question_templates=inferred_num_templates,
         question_template_embed_dim=question_template_embed_dim,
         image_channels=image_channels,
+        image_block_type=image_block_type,
         fusion_hidden_dim=fusion_hidden_dim,
         fusion_dropout=fusion_dropout,
         fusion_layers=fusion_layers,
-        head_type=head_type,
     )
+
+    if variant == "tdm_s":
+        return TDMSVQA(config)
 
     if variant == "tdm_m":
         return TDMMVQA(config)
 
-    return TDMSVQA(config)
+    if variant == "tdm_l":
+        return TDMLVQA(config)
 
+    if variant == "tdm_fast":
+        return TDMFastVQA(config)
 
-def build_tdm_xxs_from_metadata(
-    metadata: dict,
-    num_classes: int | None = None,
-    num_question_templates: int | None = None,
-    head_type: StudentHeadType = "single",
-) -> TDMVQA:
-    return build_tdm_from_metadata(
-        metadata=metadata,
-        variant="tdm_xxs",
-        num_classes=num_classes,
-        num_question_templates=num_question_templates,
-        head_type=head_type,
-    )
-
-
-def build_tdm_xs_from_metadata(
-    metadata: dict,
-    num_classes: int | None = None,
-    num_question_templates: int | None = None,
-    head_type: StudentHeadType = "single",
-) -> TDMVQA:
-    return build_tdm_from_metadata(
-        metadata=metadata,
-        variant="tdm_xs",
-        num_classes=num_classes,
-        num_question_templates=num_question_templates,
-        head_type=head_type,
-    )
+    raise ValueError(f"Unknown TDM variant: {variant}")
 
 
 def build_tdm_s_from_metadata(
     metadata: dict,
     num_classes: int | None = None,
     num_question_templates: int | None = None,
-    question_template_embed_dim: int = 32,
-    fusion_hidden_dim: int = 192,
-    fusion_dropout: float = 0.1,
-    head_type: StudentHeadType = "single",
 ) -> TDMSVQA:
     return build_tdm_from_metadata(
         metadata=metadata,
         variant="tdm_s",
         num_classes=num_classes,
         num_question_templates=num_question_templates,
-        question_template_embed_dim=question_template_embed_dim,
-        fusion_hidden_dim=fusion_hidden_dim,
-        fusion_dropout=fusion_dropout,
-        head_type=head_type,
     )  # type: ignore[return-value]
 
 
@@ -1100,20 +1072,38 @@ def build_tdm_m_from_metadata(
     metadata: dict,
     num_classes: int | None = None,
     num_question_templates: int | None = None,
-    question_template_embed_dim: int = 64,
-    fusion_hidden_dim: int = 384,
-    fusion_dropout: float = 0.15,
-    head_type: StudentHeadType = "single",
 ) -> TDMMVQA:
     return build_tdm_from_metadata(
         metadata=metadata,
         variant="tdm_m",
         num_classes=num_classes,
         num_question_templates=num_question_templates,
-        question_template_embed_dim=question_template_embed_dim,
-        fusion_hidden_dim=fusion_hidden_dim,
-        fusion_dropout=fusion_dropout,
-        head_type=head_type,
+    )  # type: ignore[return-value]
+
+
+def build_tdm_l_from_metadata(
+    metadata: dict,
+    num_classes: int | None = None,
+    num_question_templates: int | None = None,
+) -> TDMLVQA:
+    return build_tdm_from_metadata(
+        metadata=metadata,
+        variant="tdm_l",
+        num_classes=num_classes,
+        num_question_templates=num_question_templates,
+    )  # type: ignore[return-value]
+
+
+def build_tdm_fast_from_metadata(
+    metadata: dict,
+    num_classes: int | None = None,
+    num_question_templates: int | None = None,
+) -> TDMFastVQA:
+    return build_tdm_from_metadata(
+        metadata=metadata,
+        variant="tdm_fast",
+        num_classes=num_classes,
+        num_question_templates=num_question_templates,
     )  # type: ignore[return-value]
 
 
@@ -1174,12 +1164,15 @@ def describe_model(model: nn.Module) -> str:
 
     if isinstance(model, TDMVQA):
         lines.append(f"Student variant:   {model.config.variant}")
-        lines.append(f"Head type:         {model.config.head_type}")
+        lines.append(f"Image block type:  {model.config.image_block_type}")
         lines.append(f"Image channels:    {model.config.image_channels}")
         lines.append(f"Image feature dim: {model.image_encoder.feature_dim}")
+        lines.append(f"Template encoder:  one_hot + Linear")
+        lines.append(f"Template input dim:{model.config.num_question_templates}")
         lines.append(f"Template emb dim:  {model.question_encoder.output_dim}")
         lines.append(f"Fusion hidden dim: {model.config.fusion_hidden_dim}")
         lines.append(f"Fusion layers:     {model.config.fusion_layers}")
         lines.append(f"Num classes:       {model.config.num_classes}")
+        lines.append("Head type:         single edge_global")
 
     return "\n".join(lines)
