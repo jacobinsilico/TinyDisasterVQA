@@ -4,41 +4,62 @@
 
 Train TinyDisasterVQA TDM student models.
 
-Modes:
-  1. CE only:
+Current student formulation:
+  - single-head edge_global classifier
+  - cap5 / 14 classes by default
+  - template question encoder: one-hot template vector + Linear
+  - no multihead routing
+  - no LSTM / attention in student
+
+Supported student variants:
+  - tdm_s
+  - tdm_m
+  - tdm_l
+  - tdm_fast
+
+Supported modes:
+  1. CE:
      student learns from hard edge_global labels.
 
-  2. KD:
+  2. weighted CE:
+     student learns from hard labels with edge_global class weights.
+
+  3. KD:
      student learns from hard labels + soft teacher logits.
 
-Run CE-only:
+Example CE:
 
 PYTHONPATH=src python scripts/06_train_student.py \
   --mode ce \
-  --student-variant tdm_s \
-  --head-type single \
+  --student-variant tdm_m \
   --epochs 50 \
   --batch-size 64 \
-  --run-name tdm_s_single_ce
+  --run-name S2_tdm_m_ce
 
-Run KD:
+Example weighted CE:
+
+PYTHONPATH=src python scripts/06_train_student.py \
+  --mode weighted_ce \
+  --student-variant tdm_m \
+  --epochs 50 \
+  --batch-size 64 \
+  --run-name S4_tdm_m_weighted_ce
+
+Example KD:
 
 PYTHONPATH=src python scripts/06_train_student.py \
   --mode kd \
-  --student-variant tdm_s \
-  --head-type single \
-  --teacher-checkpoint /content/drive/MyDrive/TinyDisasterVQA/runs/convnext_tiny_teacher_edge_global/checkpoints/best.pt \
+  --student-variant tdm_m \
+  --teacher-checkpoint /path/to/teacher/checkpoints/best.pt \
   --epochs 50 \
   --batch-size 64 \
-  --run-name tdm_s_single_kd
-
-Default early stopping:
-  stop after 5 epochs without valid accuracy improvement.
+  --run-name S5_tdm_m_kd_T5
 """
 
 from __future__ import annotations
 
 import argparse
+import inspect
 import sys
 import time
 from pathlib import Path
@@ -76,14 +97,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
     # Paths.
-    parser.add_argument("--train-csv", type=Path, default=Path("outputs/training_data/train.csv"))
-    parser.add_argument("--valid-csv", type=Path, default=Path("outputs/training_data/valid.csv"))
-    parser.add_argument("--test-csv", type=Path, default=Path("outputs/training_data/test.csv"))
-    parser.add_argument("--metadata", type=Path, default=Path("outputs/training_data/metadata.json"))
+    parser.add_argument("--train-csv", type=Path, default=Path("outputs/training_data_cap5/train.csv"))
+    parser.add_argument("--valid-csv", type=Path, default=Path("outputs/training_data_cap5/valid.csv"))
+    parser.add_argument("--test-csv", type=Path, default=Path("outputs/training_data_cap5/test.csv"))
+    parser.add_argument("--metadata", type=Path, default=Path("outputs/training_data_cap5/metadata.json"))
     parser.add_argument(
         "--class-weights",
         type=Path,
-        default=Path("outputs/answer_space/class_weights_edge_global_by_label.json"),
+        default=Path("outputs/answer_space_cap5/class_weights_edge_global_by_label.json"),
     )
     parser.add_argument("--dataset-root", type=Path, default=Path("dataset"))
     parser.add_argument("--runs-dir", type=Path, default=Path("runs"))
@@ -94,12 +115,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"])
 
     # Mode.
-    parser.add_argument("--mode", type=str, default="ce", choices=["ce", "kd"])
-    parser.add_argument("--teacher-checkpoint", type=Path, default=None)
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="ce",
+        choices=["ce", "weighted_ce", "kd"],
+        help="Training objective.",
+    )
+    parser.add_argument(
+        "--use-class-weights",
+        action="store_true",
+        default=False,
+        help="Backward-compatible alias for --mode weighted_ce.",
+    )
 
     # Data.
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument(
+        "--eval-batch-size",
+        type=int,
+        default=None,
+        help="Optional separate valid/test batch size. Defaults to --batch-size.",
+    )
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--augment-train", action="store_true", default=True)
     parser.add_argument("--no-augment-train", action="store_false", dest="augment_train")
@@ -109,51 +147,81 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--student-variant",
         type=str,
-        default="tdm_s",
-        choices=["tdm_xxs", "tdm_xs", "tdm_s", "tdm_m"],
-        help="Student size/variant to train.",
+        default="tdm_m",
+        choices=["tdm_s", "tdm_m", "tdm_l", "tdm_fast"],
+        help="Student model variant.",
     )
-    # Backwards-compatible alias used by older commands: --student-size s/m.
     parser.add_argument(
         "--student-size",
         type=str,
         default=None,
-        choices=["xxs", "xs", "s", "m", "tdm_xxs", "tdm_xs", "tdm_s", "tdm_m"],
+        choices=[
+            "s",
+            "m",
+            "l",
+            "fast",
+            "tdm_s",
+            "tdm_m",
+            "tdm_l",
+            "tdm_fast",
+            # Deprecated aliases, mapped to new names.
+            "xxs",
+            "xs",
+            "tdm_xxs",
+            "tdm_xs",
+        ],
         help="Deprecated alias for --student-variant.",
     )
     parser.add_argument(
-        "--head-type",
-        type=str,
-        default="single",
-        choices=["single", "multihead"],
-        help="single = one 19-class head; multihead = one 19-class head per edge_head.",
+        "--num-classes",
+        type=int,
+        default=None,
+        help="Usually inferred from metadata. cap5 should be 14.",
     )
-    parser.add_argument("--num-classes", type=int, default=19)
-    parser.add_argument("--num-question-templates", type=int, default=31)
+    parser.add_argument(
+        "--num-question-templates",
+        type=int,
+        default=None,
+        help="Usually inferred from metadata.",
+    )
     parser.add_argument("--template-embed-dim", type=int, default=None)
     parser.add_argument("--fusion-hidden-dim", type=int, default=None)
     parser.add_argument("--fusion-dropout", type=float, default=None)
     parser.add_argument("--fusion-layers", type=int, default=None)
 
-    # Teacher model config, must match saved teacher checkpoint.
+    # Teacher / KD.
+    parser.add_argument("--teacher-checkpoint", type=Path, default=None)
     parser.add_argument(
         "--teacher-backbone",
         type=str,
-        default="convnext_tiny",
-        choices=["convnext_tiny", "swin_tiny", "efficientnet_b0", "efficientnet_b1", "resnet18", "resnet50"],
+        default=None,
+        choices=[None, "convnext_tiny", "swin_tiny", "efficientnet_b0", "efficientnet_b1", "resnet18", "resnet50"],
     )
-    parser.add_argument("--teacher-pretrained", action="store_true", default=True)
-    parser.add_argument("--teacher-question-embed-dim", type=int, default=128)
-    parser.add_argument("--teacher-question-hidden-dim", type=int, default=256)
-    parser.add_argument("--teacher-fusion-hidden-dim", type=int, default=512)
-    parser.add_argument("--teacher-fusion-dropout", type=float, default=0.3)
+    parser.add_argument(
+        "--teacher-question-encoder",
+        type=str,
+        default=None,
+        choices=[None, "lstm", "template"],
+    )
+    parser.add_argument("--teacher-pretrained", action="store_true", default=None)
+    parser.add_argument("--teacher-no-pretrained", action="store_false", dest="teacher_pretrained")
+    parser.add_argument("--teacher-question-embed-dim", type=int, default=None)
+    parser.add_argument("--teacher-question-hidden-dim", type=int, default=None)
+    parser.add_argument("--teacher-template-embed-dim", type=int, default=None)
+    parser.add_argument("--teacher-fusion-hidden-dim", type=int, default=None)
+    parser.add_argument("--teacher-fusion-dropout", type=float, default=None)
+    parser.add_argument(
+        "--teacher-use-count-aux",
+        action="store_true",
+        default=None,
+        help="Usually inferred from checkpoint config. Needed for loading T6 teacher.",
+    )
 
     # Optimization.
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--use-class-weights", action="store_true", default=False)
     parser.add_argument("--amp", action="store_true", default=True)
     parser.add_argument("--no-amp", action="store_false", dest="amp")
 
@@ -162,7 +230,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kd-temperature", type=float, default=4.0)
 
     # Early stopping.
-    parser.add_argument("--patience", type=int, default=5)
+    parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--min-delta", type=float, default=0.0)
 
     # Logging/checkpointing.
@@ -171,22 +239,22 @@ def parse_args() -> argparse.Namespace:
 
     return parser.parse_args()
 
-def normalize_student_variant(args: argparse.Namespace) -> None:
-    """
-    Normalizes old/new CLI naming.
 
-    Preferred: --student-variant tdm_xxs/tdm_xs/tdm_s/tdm_m
-    Old alias: --student-size xxs/xs/s/m
-    """
+def normalize_student_variant(args: argparse.Namespace) -> None:
     alias = {
-        "xxs": "tdm_xxs",
-        "xs": "tdm_xs",
         "s": "tdm_s",
         "m": "tdm_m",
-        "tdm_xxs": "tdm_xxs",
-        "tdm_xs": "tdm_xs",
+        "l": "tdm_l",
+        "fast": "tdm_fast",
         "tdm_s": "tdm_s",
         "tdm_m": "tdm_m",
+        "tdm_l": "tdm_l",
+        "tdm_fast": "tdm_fast",
+        # Deprecated old naming. These map to the nearest new scale.
+        "xxs": "tdm_s",
+        "xs": "tdm_m",
+        "tdm_xxs": "tdm_s",
+        "tdm_xs": "tdm_m",
     }
 
     if args.student_size is not None:
@@ -196,11 +264,72 @@ def normalize_student_variant(args: argparse.Namespace) -> None:
 def get_device(arg: str) -> torch.device:
     if arg == "cpu":
         return torch.device("cpu")
+
     if arg == "cuda":
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA requested but not available.")
         return torch.device("cuda")
+
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def infer_num_classes(metadata: dict[str, Any], fallback: int | None = None) -> int:
+    for key in ["num_classes", "num_edge_global_classes"]:
+        if key in metadata:
+            return int(metadata[key])
+
+    try:
+        return int(metadata["answer_space"]["target_modes"]["edge_global"]["num_classes"])
+    except KeyError:
+        pass
+
+    if fallback is not None:
+        return int(fallback)
+
+    raise KeyError(
+        "Could not infer num_classes from metadata. Expected num_classes, "
+        "num_edge_global_classes, or answer_space.target_modes.edge_global.num_classes."
+    )
+
+
+def infer_num_question_templates(metadata: dict[str, Any], fallback: int | None = None) -> int:
+    if "num_question_templates" in metadata:
+        return int(metadata["num_question_templates"])
+
+    if fallback is not None:
+        return int(fallback)
+
+    return 31
+
+
+def infer_label_to_class(metadata: dict[str, Any]) -> dict[str, str] | None:
+    if "edge_label_to_class" in metadata:
+        return {
+            str(k): str(v)
+            for k, v in metadata["edge_label_to_class"].items()
+        }
+
+    try:
+        return {
+            str(k): str(v)
+            for k, v in metadata["answer_space"]["target_modes"]["edge_global"]["label_to_class"].items()
+        }
+    except KeyError:
+        return None
+
+
+def infer_count_cap(metadata: dict[str, Any]) -> int | None:
+    if "count_cap" in metadata and metadata["count_cap"] is not None:
+        return int(metadata["count_cap"])
+
+    try:
+        count_cap = metadata["answer_space"]["count_cap"]
+        if count_cap is not None:
+            return int(count_cap)
+    except KeyError:
+        pass
+
+    return None
 
 
 def build_loaders(args: argparse.Namespace) -> dict[str, DataLoader]:
@@ -256,40 +385,45 @@ def build_loaders(args: argparse.Namespace) -> dict[str, DataLoader]:
             indices,
         )
         test_dataset = valid_dataset
+
         print(f"Overfit mode enabled: using first {n} training samples for train/valid/test.")
 
     pin_memory = torch.cuda.is_available()
+    eval_batch_size = args.eval_batch_size or args.batch_size
+
+    train_loader_kwargs = {
+        "batch_size": args.batch_size,
+        "shuffle": True,
+        "num_workers": args.num_workers,
+        "pin_memory": pin_memory,
+        "drop_last": False,
+    }
+
+    eval_loader_kwargs = {
+        "batch_size": eval_batch_size,
+        "shuffle": False,
+        "num_workers": args.num_workers,
+        "pin_memory": pin_memory,
+        "drop_last": False,
+    }
+
+    if args.num_workers > 0:
+        train_loader_kwargs["persistent_workers"] = True
+        train_loader_kwargs["prefetch_factor"] = 2
+        eval_loader_kwargs["persistent_workers"] = True
+        eval_loader_kwargs["prefetch_factor"] = 2
 
     return {
-        "train": DataLoader(
-            train_dataset,
-            batch_size=args.batch_size,
-            shuffle=True,
-            num_workers=args.num_workers,
-            pin_memory=pin_memory,
-            drop_last=False,
-        ),
-        "valid": DataLoader(
-            valid_dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.num_workers,
-            pin_memory=pin_memory,
-            drop_last=False,
-        ),
-        "test": DataLoader(
-            test_dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.num_workers,
-            pin_memory=pin_memory,
-            drop_last=False,
-        ),
+        "train": DataLoader(train_dataset, **train_loader_kwargs),
+        "valid": DataLoader(valid_dataset, **eval_loader_kwargs),
+        "test": DataLoader(test_dataset, **eval_loader_kwargs),
     }
 
 
 def build_ce_criterion(args: argparse.Namespace, device: torch.device) -> nn.Module:
-    if not args.use_class_weights:
+    use_weights = args.mode == "weighted_ce"
+
+    if not use_weights:
         return nn.CrossEntropyLoss()
 
     if not args.class_weights.exists():
@@ -300,40 +434,177 @@ def build_ce_criterion(args: argparse.Namespace, device: torch.device) -> nn.Mod
 
     for label_str, weight in weights_dict.items():
         label = int(label_str)
+
         if 0 <= label < args.num_classes:
             weights[label] = float(weight)
 
-    print("Using class weights:")
-    print(weights.tolist())
+    print("Using edge_global class weights:")
+    print(weights.detach().cpu().tolist())
 
     return nn.CrossEntropyLoss(weight=weights.to(device))
 
 
-def build_teacher(args: argparse.Namespace, metadata: dict[str, Any], device: torch.device) -> nn.Module:
+def read_checkpoint_config(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    config = checkpoint.get("config", {})
+    if config is None:
+        return {}
+    return dict(config)
+
+
+def _config_get(
+    ckpt_config: dict[str, Any],
+    args_value: Any,
+    key: str,
+    default: Any,
+) -> Any:
+    if args_value is not None:
+        return args_value
+
+    if key in ckpt_config and ckpt_config[key] is not None:
+        return ckpt_config[key]
+
+    return default
+
+
+def infer_teacher_use_count_aux(
+    ckpt_config: dict[str, Any],
+    args_value: bool | None,
+) -> bool:
+    if args_value is not None:
+        return bool(args_value)
+
+    if "use_count_aux" in ckpt_config:
+        return bool(ckpt_config["use_count_aux"])
+
+    if ckpt_config.get("loss_mode") == "count_aux":
+        return True
+
+    return False
+
+
+def build_teacher_for_kd(
+    args: argparse.Namespace,
+    metadata: dict[str, Any],
+    device: torch.device,
+) -> nn.Module:
     if args.teacher_checkpoint is None:
-        raise ValueError("--teacher-checkpoint is required when --mode kd")
+        raise ValueError("--teacher-checkpoint is required when --mode kd.")
 
     if not args.teacher_checkpoint.exists():
         raise FileNotFoundError(f"Teacher checkpoint not found: {args.teacher_checkpoint}")
 
+    checkpoint = torch.load(args.teacher_checkpoint, map_location=device)
+    ckpt_config = read_checkpoint_config(checkpoint)
+
+    teacher_backbone = str(
+        _config_get(
+            ckpt_config=ckpt_config,
+            args_value=args.teacher_backbone,
+            key="backbone",
+            default="convnext_tiny",
+        )
+    )
+
+    teacher_question_encoder = str(
+        _config_get(
+            ckpt_config=ckpt_config,
+            args_value=args.teacher_question_encoder,
+            key="question_encoder",
+            default="template",
+        )
+    )
+
+    teacher_pretrained = bool(
+        _config_get(
+            ckpt_config=ckpt_config,
+            args_value=args.teacher_pretrained,
+            key="pretrained",
+            default=True,
+        )
+    )
+
+    teacher_question_embed_dim = int(
+        _config_get(
+            ckpt_config=ckpt_config,
+            args_value=args.teacher_question_embed_dim,
+            key="question_embed_dim",
+            default=128,
+        )
+    )
+
+    teacher_question_hidden_dim = int(
+        _config_get(
+            ckpt_config=ckpt_config,
+            args_value=args.teacher_question_hidden_dim,
+            key="question_hidden_dim",
+            default=256,
+        )
+    )
+
+    teacher_template_embed_dim = int(
+        _config_get(
+            ckpt_config=ckpt_config,
+            args_value=args.teacher_template_embed_dim,
+            key="template_embed_dim",
+            default=128,
+        )
+    )
+
+    teacher_fusion_hidden_dim = int(
+        _config_get(
+            ckpt_config=ckpt_config,
+            args_value=args.teacher_fusion_hidden_dim,
+            key="fusion_hidden_dim",
+            default=512,
+        )
+    )
+
+    teacher_fusion_dropout = float(
+        _config_get(
+            ckpt_config=ckpt_config,
+            args_value=args.teacher_fusion_dropout,
+            key="fusion_dropout",
+            default=0.3,
+        )
+    )
+
+    teacher_use_count_aux = infer_teacher_use_count_aux(
+        ckpt_config=ckpt_config,
+        args_value=args.teacher_use_count_aux,
+    )
+
+    num_count_classes = ckpt_config.get("num_count_classes", None)
+    if num_count_classes is not None:
+        num_count_classes = int(num_count_classes)
+
     teacher = build_teacher_from_metadata(
         metadata=metadata,
-        image_backbone=args.teacher_backbone,
-        pretrained=args.teacher_pretrained,
+        image_backbone=teacher_backbone,
+        pretrained=teacher_pretrained,
         num_classes=args.num_classes,
         freeze_image_encoder=False,
-        question_embed_dim=args.teacher_question_embed_dim,
-        question_hidden_dim=args.teacher_question_hidden_dim,
-        fusion_hidden_dim=args.teacher_fusion_hidden_dim,
-        fusion_dropout=args.teacher_fusion_dropout,
+        question_encoder=teacher_question_encoder,
+        question_embed_dim=teacher_question_embed_dim,
+        question_hidden_dim=teacher_question_hidden_dim,
+        template_embed_dim=teacher_template_embed_dim,
+        fusion_hidden_dim=teacher_fusion_hidden_dim,
+        fusion_dropout=teacher_fusion_dropout,
+        use_count_aux=teacher_use_count_aux,
+        num_count_classes=num_count_classes,
     ).to(device)
 
-    checkpoint = torch.load(args.teacher_checkpoint, map_location=device)
     teacher.load_state_dict(checkpoint["model_state_dict"], strict=True)
     teacher.eval()
 
     for param in teacher.parameters():
         param.requires_grad = False
+
+    print("Loaded KD teacher:")
+    print(f"  checkpoint:        {args.teacher_checkpoint}")
+    print(f"  backbone:          {teacher_backbone}")
+    print(f"  question_encoder:  {teacher_question_encoder}")
+    print(f"  pretrained:        {teacher_pretrained}")
+    print(f"  use_count_aux:     {teacher_use_count_aux}")
 
     return teacher
 
@@ -345,6 +616,18 @@ def autocast_context(device: torch.device, enabled: bool):
     )
 
 
+def extract_logits(outputs: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
+    if isinstance(outputs, torch.Tensor):
+        return outputs
+
+    if isinstance(outputs, dict):
+        if "logits" not in outputs:
+            raise KeyError("Model output dict must contain key 'logits'.")
+        return outputs["logits"]
+
+    raise TypeError(f"Expected tensor or dict output, got {type(outputs)}.")
+
+
 def kd_loss_fn(
     student_logits: torch.Tensor,
     teacher_logits: torch.Tensor,
@@ -354,7 +637,7 @@ def kd_loss_fn(
     KL(student || teacher) with softened distributions.
     Multiplied by T^2 following standard KD practice.
     """
-    t = temperature
+    t = float(temperature)
 
     student_log_probs = F.log_softmax(student_logits / t, dim=1)
     teacher_probs = F.softmax(teacher_logits / t, dim=1)
@@ -368,32 +651,53 @@ def kd_loss_fn(
 
 def forward_student(
     student: nn.Module,
-    images: torch.Tensor,
-    question_tokens: torch.Tensor | None,
-    question_lengths: torch.Tensor | None,
-    question_template_ids: torch.Tensor,
-    edge_heads: Any | None,
-    args: argparse.Namespace,
+    batch: dict[str, Any],
+    device: torch.device,
 ) -> torch.Tensor:
-    """
-    Single-head students ignore edge_heads.
-    Multi-head students need edge_heads so the correct task-specific head is used.
-    """
-    kwargs = {
+    images = batch["image"].to(device, non_blocking=True)
+    question_tokens = batch["question_tokens"].to(device, non_blocking=True)
+    question_lengths = batch["question_length"].to(device, non_blocking=True)
+    question_template_ids = batch["question_template_id"].to(device, non_blocking=True)
+
+    return student(
+        images=images,
+        question_tokens=question_tokens,
+        question_lengths=question_lengths,
+        question_template_ids=question_template_ids,
+    )
+
+
+def forward_teacher(
+    teacher: nn.Module,
+    batch: dict[str, Any],
+    device: torch.device,
+) -> torch.Tensor:
+    images = batch["image"].to(device, non_blocking=True)
+    question_tokens = batch["question_tokens"].to(device, non_blocking=True)
+    question_lengths = batch["question_length"].to(device, non_blocking=True)
+    question_template_ids = batch["question_template_id"].to(device, non_blocking=True)
+
+    forward_sig = inspect.signature(teacher.forward)
+    params = forward_sig.parameters
+
+    kwargs: dict[str, Any] = {
         "images": images,
-        "question_tokens": question_tokens,
-        "question_lengths": question_lengths,
-        "question_template_ids": question_template_ids,
     }
 
-    if args.head_type == "multihead":
-        if edge_heads is None:
-            raise KeyError(
-                "Batch is missing edge_head, but --head-type multihead requires it."
-            )
-        kwargs["edge_heads"] = edge_heads
+    if "question_tokens" in params:
+        kwargs["question_tokens"] = question_tokens
 
-    return student(**kwargs)
+    if "question_lengths" in params:
+        kwargs["question_lengths"] = question_lengths
+
+    if "question_template_ids" in params:
+        kwargs["question_template_ids"] = question_template_ids
+
+    if "return_aux" in params:
+        kwargs["return_aux"] = False
+
+    outputs = teacher(**kwargs)
+    return extract_logits(outputs)
 
 
 @torch.no_grad()
@@ -403,31 +707,28 @@ def evaluate_student(
     device: torch.device,
     num_classes: int,
     criterion: nn.Module | None = None,
+    label_to_class: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     model.eval()
 
     if criterion is None:
         criterion = nn.CrossEntropyLoss()
 
-    meter = ClassificationMetrics(num_classes=num_classes)
+    meter = ClassificationMetrics(
+        num_classes=num_classes,
+        label_to_class=label_to_class,
+    )
+
     total_loss = 0.0
     total_samples = 0
 
     for batch in dataloader:
-        images = batch["image"].to(device, non_blocking=True)
-        question_tokens = batch["question_tokens"].to(device, non_blocking=True)
-        question_lengths = batch["question_length"].to(device, non_blocking=True)
-        question_template_ids = batch["question_template_id"].to(device, non_blocking=True)
         targets = batch["target"].to(device, non_blocking=True)
 
         logits = forward_student(
             student=model,
-            images=images,
-            question_tokens=question_tokens,
-            question_lengths=question_lengths,
-            question_template_ids=question_template_ids,
-            edge_heads=batch.get("edge_head"),
-            args=getattr(model, "_train_args", argparse.Namespace(head_type="single")),
+            batch=batch,
+            device=device,
         )
 
         loss = criterion(logits, targets)
@@ -466,14 +767,14 @@ def train_one_epoch(
     ce_loss_meter = AverageMeter("ce_loss")
     kd_loss_meter = AverageMeter("kd_loss")
 
-    metrics = ClassificationMetrics(num_classes=args.num_classes)
+    metrics = ClassificationMetrics(
+        num_classes=args.num_classes,
+        label_to_class=args.label_to_class,
+    )
+
     timer = Timer()
 
     for step, batch in enumerate(loader, start=1):
-        images = batch["image"].to(device, non_blocking=True)
-        question_tokens = batch["question_tokens"].to(device, non_blocking=True)
-        question_lengths = batch["question_length"].to(device, non_blocking=True)
-        question_template_ids = batch["question_template_id"].to(device, non_blocking=True)
         targets = batch["target"].to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
@@ -481,12 +782,8 @@ def train_one_epoch(
         with autocast_context(device, args.amp):
             student_logits = forward_student(
                 student=student,
-                images=images,
-                question_tokens=question_tokens,
-                question_lengths=question_lengths,
-                question_template_ids=question_template_ids,
-                edge_heads=batch.get("edge_head"),
-                args=args,
+                batch=batch,
+                device=device,
             )
 
             ce_loss = ce_criterion(student_logits, targets)
@@ -495,10 +792,10 @@ def train_one_epoch(
                 assert teacher is not None
 
                 with torch.no_grad():
-                    teacher_logits = teacher(
-                        images=images,
-                        question_tokens=question_tokens,
-                        question_lengths=question_lengths,
+                    teacher_logits = forward_teacher(
+                        teacher=teacher,
+                        batch=batch,
+                        device=device,
                     )
 
                 kd_loss = kd_loss_fn(
@@ -507,9 +804,10 @@ def train_one_epoch(
                     temperature=args.kd_temperature,
                 )
 
-                loss = (1.0 - args.kd_alpha) * ce_loss + args.kd_alpha * kd_loss
+                loss = (1.0 - float(args.kd_alpha)) * ce_loss + float(args.kd_alpha) * kd_loss
+
             else:
-                kd_loss = torch.zeros((), device=device)
+                kd_loss = student_logits.new_tensor(0.0)
                 loss = ce_loss
 
         scaler.scale(loss).backward()
@@ -522,6 +820,7 @@ def train_one_epoch(
         scaler.update()
 
         batch_size = targets.size(0)
+
         loss_meter.update(float(loss.item()), n=batch_size)
         ce_loss_meter.update(float(ce_loss.item()), n=batch_size)
         kd_loss_meter.update(float(kd_loss.item()), n=batch_size)
@@ -535,7 +834,7 @@ def train_one_epoch(
 
         if step % args.log_interval == 0 or step == 1 or step == len(loader):
             current_metrics = metrics.compute()
-            current = current_metrics["overall"]
+            overall = current_metrics["overall"]
             by_head = current_metrics["by_head"]
 
             head_str = " | ".join(
@@ -549,7 +848,7 @@ def train_one_epoch(
                 f"loss={loss_meter.avg:.4f} | "
                 f"ce={ce_loss_meter.avg:.4f} | "
                 f"kd={kd_loss_meter.avg:.4f} | "
-                f"acc={current['accuracy']:.4f} | "
+                f"acc={overall['accuracy']:.4f} | "
                 f"{head_str} | "
                 f"time={timer.elapsed_str()}"
             )
@@ -562,17 +861,47 @@ def train_one_epoch(
     return result
 
 
+def build_run_prefix(args: argparse.Namespace) -> str:
+    cap_tag = f"cap{args.count_cap}" if args.count_cap is not None else "capNA"
+    return f"student_{cap_tag}_{args.student_variant}_{args.mode}"
+
+
 def main() -> None:
     args = parse_args()
+
     normalize_student_variant(args)
+
+    if args.use_class_weights:
+        args.mode = "weighted_ce"
+
+    if args.mode == "kd" and args.teacher_checkpoint is None:
+        raise ValueError("--teacher-checkpoint is required for --mode kd.")
+
+    if args.kd_alpha < 0 or args.kd_alpha > 1:
+        raise ValueError("--kd-alpha must be in [0, 1].")
+
+    if args.kd_temperature <= 0:
+        raise ValueError("--kd-temperature must be positive.")
+
     set_seed(args.seed)
 
     device = get_device(args.device)
 
-    if args.mode == "kd" and args.teacher_checkpoint is None:
-        raise ValueError("--teacher-checkpoint is required for --mode kd")
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
 
-    run_prefix = f"{args.student_variant}_{args.head_type}_{args.mode}"
+    metadata = load_json(args.metadata)
+
+    args.num_classes = infer_num_classes(metadata, fallback=args.num_classes)
+    args.num_question_templates = infer_num_question_templates(
+        metadata,
+        fallback=args.num_question_templates,
+    )
+    args.label_to_class = infer_label_to_class(metadata)
+    args.count_cap = infer_count_cap(metadata)
+
+    run_prefix = build_run_prefix(args)
+
     run_dir = make_run_dir(
         base_dir=args.runs_dir,
         run_name=args.run_name,
@@ -583,7 +912,11 @@ def main() -> None:
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
     config = vars(args).copy()
-    config = {k: str(v) if isinstance(v, Path) else v for k, v in config.items()}
+    config = {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in config.items()
+        if key != "label_to_class"
+    }
     config["run_dir"] = str(run_dir)
     config["device"] = str(device)
 
@@ -592,21 +925,26 @@ def main() -> None:
     print("=" * 80)
     print("TinyDisasterVQA / Train TDM Student")
     print("=" * 80)
-    print(f"Run dir:       {run_dir}")
-    print(f"Device:        {device}")
-    print(f"Student:       {args.student_variant}")
-    print(f"Head type:     {args.head_type}")
-    print(f"Mode:          {args.mode}")
-    print(f"AMP:           {args.amp}")
-    print(f"Batch size:    {args.batch_size}")
-    print(f"Epochs:        {args.epochs}")
-    print(f"LR:            {args.lr}")
-    print(f"Patience:      {args.patience}")
-    print(f"KD alpha:      {args.kd_alpha}")
-    print(f"KD temp:       {args.kd_temperature}")
+    print(f"Run dir:              {run_dir}")
+    print(f"Device:               {device}")
+    print(f"Student variant:      {args.student_variant}")
+    print(f"Mode:                 {args.mode}")
+    print(f"Count cap:            {args.count_cap}")
+    print(f"Num classes:          {args.num_classes}")
+    print(f"Question templates:   {args.num_question_templates}")
+    print(f"AMP:                  {args.amp}")
+    print(f"Image size:           {args.image_size}")
+    print(f"Batch size:           {args.batch_size}")
+    print(f"Eval batch:           {args.eval_batch_size or args.batch_size}")
+    print(f"Epochs:               {args.epochs}")
+    print(f"LR:                   {args.lr}")
+    print(f"Weight decay:         {args.weight_decay}")
+    print(f"Patience:             {args.patience}")
+    print(f"Min delta:            {args.min_delta}")
+    print(f"KD alpha:             {args.kd_alpha if args.mode == 'kd' else 0.0}")
+    print(f"KD temp:              {args.kd_temperature if args.mode == 'kd' else 0.0}")
     print()
 
-    metadata = load_json(args.metadata)
     loaders = build_loaders(args)
 
     student = build_tdm_from_metadata(
@@ -618,20 +956,17 @@ def main() -> None:
         fusion_hidden_dim=args.fusion_hidden_dim,
         fusion_dropout=args.fusion_dropout,
         fusion_layers=args.fusion_layers,
-        head_type=args.head_type,
     ).to(device)
-
-    # Store the head type on the model so evaluate_student can select the right
-    # forward path without changing its call signature too much.
-    student._train_args = argparse.Namespace(head_type=args.head_type)
 
     print(describe_model(student))
     print()
 
     teacher = None
+
     if args.mode == "kd":
         print("Loading teacher...")
-        teacher = build_teacher(args, metadata, device)
+        teacher = build_teacher_for_kd(args, metadata, device)
+        print()
         print(describe_model(teacher))
         print()
 
@@ -656,6 +991,7 @@ def main() -> None:
     best_valid_acc = -1.0
     best_epoch = -1
     epochs_without_improvement = 0
+    completed_epoch = 0
 
     metrics_path = run_dir / "metrics.jsonl"
     total_timer = Timer()
@@ -686,12 +1022,15 @@ def main() -> None:
             device=device,
             num_classes=args.num_classes,
             criterion=ce_criterion,
+            label_to_class=args.label_to_class,
         )
 
         scheduler.step()
 
         train_acc = float(train_metrics["overall"]["accuracy"])
         valid_acc = float(valid_metrics["overall"]["accuracy"])
+
+        completed_epoch = epoch
 
         improved = valid_acc > (best_valid_acc + args.min_delta)
 
@@ -742,11 +1081,18 @@ def main() -> None:
             "train_acc": train_acc,
             "valid_loss": valid_metrics["loss"],
             "valid_acc": valid_acc,
+            "valid_macro_accuracy": valid_metrics.get("macro_accuracy"),
             "best_valid_acc": best_valid_acc,
             "best_epoch": best_epoch,
             "epochs_without_improvement": epochs_without_improvement,
             "epoch_time_sec": time.time() - epoch_start,
         }
+
+        if "count_exact" in valid_metrics:
+            epoch_record["valid_count_exact"] = valid_metrics["count_exact"]["accuracy"]
+
+        if "count_pm1" in valid_metrics:
+            epoch_record["valid_count_pm1"] = valid_metrics["count_pm1"]["accuracy"]
 
         append_jsonl(epoch_record, metrics_path)
 
@@ -764,7 +1110,10 @@ def main() -> None:
             f"{'IMPROVED' if improved else 'no improvement'}"
         )
 
-        if epochs_without_improvement >= args.patience:
+        if (
+            args.patience > 0
+            and epochs_without_improvement >= args.patience
+        ):
             print()
             print("=" * 80)
             print(
@@ -780,6 +1129,7 @@ def main() -> None:
     print("=" * 80)
 
     best_path = checkpoints_dir / "best.pt"
+
     if not best_path.exists():
         raise FileNotFoundError(f"No best checkpoint found at {best_path}")
 
@@ -792,6 +1142,7 @@ def main() -> None:
         device=device,
         num_classes=args.num_classes,
         criterion=ce_criterion,
+        label_to_class=args.label_to_class,
     )
 
     save_json(test_metrics, run_dir / "test_metrics.json")
@@ -801,7 +1152,7 @@ def main() -> None:
         model=student,
         optimizer=optimizer,
         scheduler=scheduler,
-        epoch=best_epoch,
+        epoch=completed_epoch,
         metrics={
             "test": test_metrics,
             "best_valid_acc": best_valid_acc,
@@ -809,6 +1160,40 @@ def main() -> None:
         },
         config=config,
     )
+
+    final_summary = {
+        "run_dir": str(run_dir),
+        "student_variant": args.student_variant,
+        "mode": args.mode,
+        "count_cap": args.count_cap,
+        "num_classes": args.num_classes,
+        "best_valid_acc": best_valid_acc,
+        "best_epoch": best_epoch,
+        "test_acc": float(test_metrics["overall"]["accuracy"]),
+        "test_macro_accuracy": test_metrics.get("macro_accuracy"),
+        "test_count_exact": (
+            test_metrics["count_exact"]["accuracy"]
+            if "count_exact" in test_metrics
+            else None
+        ),
+        "test_count_pm1": (
+            test_metrics["count_pm1"]["accuracy"]
+            if "count_pm1" in test_metrics
+            else None
+        ),
+        "total_params": sum(p.numel() for p in student.parameters()),
+        "trainable_params": sum(p.numel() for p in student.parameters() if p.requires_grad),
+        "teacher_checkpoint": str(args.teacher_checkpoint) if args.teacher_checkpoint else None,
+        "kd_alpha": args.kd_alpha if args.mode == "kd" else None,
+        "kd_temperature": args.kd_temperature if args.mode == "kd" else None,
+        "image_size": args.image_size,
+    }
+
+    if "by_head" in test_metrics:
+        for head, values in test_metrics["by_head"].items():
+            final_summary[f"test_{head}_acc"] = values["accuracy"]
+
+    save_json(final_summary, run_dir / "final_summary.json")
 
     print()
     print(format_metrics(test_metrics, prefix="test"))
@@ -818,10 +1203,18 @@ def main() -> None:
     print("Student training complete")
     print("=" * 80)
     print(f"Run dir:          {run_dir}")
+    print(f"Student:          {args.student_variant}")
     print(f"Mode:             {args.mode}")
     print(f"Best valid acc:   {best_valid_acc:.4f}")
     print(f"Best epoch:       {best_epoch}")
     print(f"Test acc:         {test_metrics['overall']['accuracy']:.4f}")
+
+    if "macro_accuracy" in test_metrics:
+        print(f"Test macro acc:   {test_metrics['macro_accuracy']:.4f}")
+
+    if "count_exact" in test_metrics:
+        print(f"Test count exact: {test_metrics['count_exact']['accuracy']:.4f}")
+
     print(f"Total time:       {total_timer.elapsed_str()}")
 
 
