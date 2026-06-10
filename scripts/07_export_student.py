@@ -2,7 +2,7 @@
 """
 07_export_student.py
 
-Export all TinyDisasterVQA student .pt checkpoints in models/ to ONNX.
+Export all TinyDisasterVQA student .pt checkpoints in checkpoints/ to ONNX.
 
 Default behavior:
   - finds all *.pt files in models/
@@ -16,7 +16,7 @@ Example:
 
 Specific file:
   PYTHONPATH=src python scripts/07_export_student.py \
-    --checkpoint models/tdm_xs_multihead_ce_128_best.pt
+  --checkpoint checkpoints/tdm_fast_128_ce_best.pt
 
 Check with ONNXRuntime if installed:
   PYTHONPATH=src python scripts/07_export_student.py --verify
@@ -141,17 +141,18 @@ class MultiHeadExportWrapper(nn.Module):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--models-dir", type=Path, default=Path("models"))
+    parser.add_argument("--models-dir", type=Path, default=Path("checkpoints"))
     parser.add_argument("--checkpoint", type=Path, default=None)
-    parser.add_argument("--metadata", type=Path, default=Path("outputs/training_data/metadata.json"))
+    parser.add_argument("--metadata", type=Path, default=Path("outputs/training_data_cap5/metadata.json"))
+    parser.add_argument("--onnx-dir", type=Path, default=Path("onnx"))
 
     parser.add_argument("--opset", type=int, default=13)
     parser.add_argument("--verify", action="store_true", help="Verify exported ONNX with onnxruntime if available.")
     parser.add_argument("--overwrite", action="store_true", default=True)
 
     # Fallbacks used if checkpoint config and filename do not provide values.
-    parser.add_argument("--default-image-size", type=int, default=224)
-    parser.add_argument("--default-num-classes", type=int, default=19)
+    parser.add_argument("--default-image-size", type=int, default=128)
+    parser.add_argument("--default-num-classes", type=int, default=14)
     parser.add_argument("--default-num-question-templates", type=int, default=31)
 
     return parser.parse_args()
@@ -160,14 +161,18 @@ def parse_args() -> argparse.Namespace:
 def infer_variant_from_name(name: str) -> str:
     lowered = name.lower()
 
-    if "tdm_xxs" in lowered:
+    if "tdm_fast" in lowered or "tdm-fast" in lowered:
+        return "tdm_fast"
+    if "tdm_xxs" in lowered or "tdm-xxs" in lowered:
         return "tdm_xxs"
-    if "tdm_xs" in lowered:
+    if "tdm_xs" in lowered or "tdm-xs" in lowered:
         return "tdm_xs"
-    if "tdm_s" in lowered:
+    if "tdm_s" in lowered or "tdm-s" in lowered:
         return "tdm_s"
-    if "tdm_m" in lowered:
+    if "tdm_m" in lowered or "tdm-m" in lowered:
         return "tdm_m"
+    if "tdm_l" in lowered or "tdm-l" in lowered:
+        return "tdm_l"
 
     raise ValueError(f"Could not infer student variant from filename: {name}")
 
@@ -180,7 +185,8 @@ def infer_head_type_from_name(name: str) -> str:
     if "single" in lowered:
         return "single"
 
-    raise ValueError(f"Could not infer head type from filename: {name}")
+    # Final v2 deployment uses single-head edge_global by default.
+    return "single"
 
 
 def infer_image_size_from_name(name: str, default: int) -> int:
@@ -294,6 +300,12 @@ def build_model(
     metadata: dict[str, Any],
     export_config: dict[str, Any],
 ) -> TDMVQA:
+    if export_config["head_type"] != "single":
+        raise ValueError(
+            "Final v2 GAP9 export supports only single-head student models. "
+            f"Got head_type={export_config['head_type']!r}."
+        )
+
     model = build_tdm_from_metadata(
         metadata=metadata,
         variant=export_config["variant"],
@@ -303,7 +315,6 @@ def build_model(
         fusion_hidden_dim=export_config["fusion_hidden_dim"],
         fusion_dropout=export_config["fusion_dropout"],
         fusion_layers=export_config["fusion_layers"],
-        head_type=export_config["head_type"],
     )
 
     return model
@@ -383,7 +394,8 @@ def export_one(
     dummy_image = torch.randn(1, 3, image_size, image_size, dtype=torch.float32)
     dummy_question_template_id = torch.tensor([0], dtype=torch.long)
 
-    onnx_path = checkpoint_path.with_suffix(".onnx")
+    args.onnx_dir.mkdir(parents=True, exist_ok=True)
+    onnx_path = args.onnx_dir / checkpoint_path.with_suffix(".onnx").name
 
     if onnx_path.exists() and not args.overwrite:
         print(f"[SKIP] ONNX already exists: {onnx_path}")
