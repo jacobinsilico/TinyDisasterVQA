@@ -330,17 +330,25 @@ def stratified_select_rows(
 
     return selected
 
+def make_question_onehot(question_template_id: int, num_question_templates: int = 31) -> np.ndarray:
+    if question_template_id < 0 or question_template_id >= num_question_templates:
+        raise ValueError(
+            f"question_template_id={question_template_id} outside "
+            f"[0, {num_question_templates - 1}]"
+        )
+
+    onehot = np.zeros((1, num_question_templates), dtype=np.float32)
+    onehot[0, question_template_id] = 1.0
+    return onehot
 
 def make_inputs(row: dict[str, str], dataset_root: Path, image_size: int) -> list[np.ndarray]:
     image_path = resolve_image_path(row, dataset_root)
     image = preprocess_image(image_path, image_size=image_size)
 
-    question_template_id = np.array(
-        [int(row["question_template_id"])],
-        dtype=np.int64,
-    )
+    question_template_id = int(row["question_template_id"])
+    question_template_onehot = make_question_onehot(question_template_id)
 
-    return [image, question_template_id]
+    return [image, question_template_onehot]
 
 
 def representative_dataset(
@@ -436,7 +444,7 @@ def write_manifest_json(
         "privileged_l3_flash_size": privileged_l3_flash_size,
         "expected_inputs": {
             "image": [1, 3, image_size, image_size],
-            "question_template_id": [1],
+            "question_template_onehot": [1, 31],
         },
         "expected_output": {
             "logits": [1, 14],
