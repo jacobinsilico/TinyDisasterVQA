@@ -236,3 +236,10 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 *:Zone.Identifier
+
+# GAP9 / deployment generated artifacts
+benchmark_logs/
+benchmark_logs_uint8_fixed/
+gap9_generated/
+submission_artifacts_final/
+checkpoints/
